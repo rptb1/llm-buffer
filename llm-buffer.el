@@ -7,6 +7,18 @@
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
 
+(defface llm-buffer-waiting '((t :inherit warning))
+  "Face used for temporary waiting message."
+  :group 'llm-buffer-faces)
+
+(defface llm-buffer-partial '((t :inherit success))
+  "Face used for partially inserted LLM response."
+  :group 'llm-buffer-faces)
+
+(defconst llm-buffer-partial-props
+  '(face llm-buffer-partial
+    font-lock-face llm-buffer-partial))
+
 ;; Requires llama-server running locally, e.g. ::
 ;;   ./build/bin/llama-server -m models/Meta-Lllama.gguf
 
@@ -109,11 +121,13 @@ temperature of 0.75."
          (partial-callback
           (lambda (text)
             (with-current-buffer request-buffer
-              (replace-region-contents beg-marker end-marker (lambda () text)))))
+              (replace-region-contents beg-marker end-marker (lambda () text))
+              (add-text-properties beg-marker end-marker llm-buffer-partial-props))))
          ;; When the final result arrives, put it in the buffer and cancel the mode.
          (response-callback
           (lambda (text)
             (funcall partial-callback text)
+            (remove-text-properties beg-marker end-marker llm-buffer-partial-props)
             (with-current-buffer request-buffer
               ;; TODO: Insert separator.
               (llm-request-mode 0))))
@@ -121,14 +135,17 @@ temperature of 0.75."
          ;; TODO: This message, and the insertion, could be in a highlighted face.
          (chunk-count (length (llm-chat-prompt-interactions prompt)))
          (temperature (llm-chat-prompt-temperature prompt))
-         (waiting-text (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
-                               (if (llm-chat-prompt-context prompt)
-                                   "system prompt and "
-                                 "")
-                               chunk-count
-                               (if temperature
-                                   (format " at temperature %g" temperature)
-                                 "")))
+         (waiting-text (propertize
+                        (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
+                                (if (llm-chat-prompt-context prompt)
+                                    "system prompt and "
+                                  "")
+                                chunk-count
+                                (if temperature
+                                    (format " at temperature %g" temperature)
+                                  ""))
+                        'face 'llm-buffer-waiting
+                        'font-lock-face 'llm-buffer-waiting))
          (error-callback
           (lambda (_ msg)
             (with-current-buffer request-buffer
