@@ -121,7 +121,10 @@ temperature of 0.75."
          ;; TODO: This message, and the insertion, could be in a highlighted face.
          (chunk-count (length (llm-chat-prompt-interactions prompt)))
          (temperature (llm-chat-prompt-temperature prompt))
-         (waiting-text (format "[Sending %d chunks%s.  Waiting for LLM...]"
+         (waiting-text (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
+                               (if (llm-chat-prompt-context prompt)
+                                   "system prompt and "
+                                 "")
                                chunk-count
                                (if temperature
                                    (format " at temperature %g" temperature)
