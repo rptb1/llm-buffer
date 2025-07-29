@@ -53,7 +53,7 @@
 ;; TODO: This is where things should be clever, e.g. breaking an RST
 ;; document into sections, looing for temperature hints, etc.  Perhaps
 ;; dispatch by mode.
-(defun llm-buffer-to-prompt ()
+(defun llm-buffer-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer."
   (let* (;; The input text
          (text
@@ -69,25 +69,35 @@
            ((= (* (/ split-length 2) 2) split-length) split)
            ((string= (car (last split)) "") (butlast split))
            (t (append split '("")))))
+         (temperature (when centitemp (/ centitemp 100.0)))
          ;; Possible system prompt buffer
          (sys (get-buffer "system-prompt")))
     ;; Form a prompt
     (cond
      ;; Check if the text contains the split regexp
-     ((> (length chunks) 1) (llm-make-chat-prompt (cdr chunks) :context (car chunks)))
+     ((> (length chunks) 1)
+      (llm-make-chat-prompt (cdr chunks) :context (car chunks) :temperature temperature))
      ;; Use the content of the "system-prompt" buffer if it exists
-     (sys (llm-make-chat-prompt text :context (with-current-buffer sys (buffer-string))))
+     (sys
+      (llm-make-chat-prompt text
+                            :context (with-current-buffer sys (buffer-string))
+                            :temperature temperature))
      ;; Otherwise send the whole text
-     (t (llm-make-chat-prompt text)))))
+     (t
+      (llm-make-chat-prompt text :temperature temperature)))))
 
-(defun llm-buffer ()
+(defun llm-buffer (centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
 
 If the buffer contains lines like \"---\" then the first chunk is
 sent as the system prompt, and the remaining chunks are sent as a
-chat conversation."
-  (interactive)
-  (let* ((prompt (llm-buffer-to-prompt))
+chat conversation.
+
+A prefix argument may be used to specify the LLM temperature for
+the request in hundredths, e.g. a prefix argument of 75 is a
+temperature of 0.75."
+  (interactive "P")
+  (let* ((prompt (llm-buffer-to-prompt centitemp))
          ;; Remember where to insert the results
          (request-buffer (current-buffer))
          (end-marker (copy-marker (point) t))
@@ -110,8 +120,12 @@ chat conversation."
          ;; TODO: This message could contain useful information.
          ;; TODO: This message, and the insertion, could be in a highlighted face.
          (chunk-count (length (llm-chat-prompt-interactions prompt)))
-         (waiting-text (format "[Sending %d chunks.  Waiting for LLM...]"
-                               chunk-count))
+         (temperature (llm-chat-prompt-temperature prompt))
+         (waiting-text (format "[Sending %d chunks%s.  Waiting for LLM...]"
+                               chunk-count
+                               (if temperature
+                                   (format " at temperature %g" temperature)
+                                 "")))
          (error-callback
           (lambda (_ msg)
             (with-current-buffer request-buffer
