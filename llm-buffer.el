@@ -2,6 +2,8 @@
 ;;;
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
 
+(provide 'llm-buffer)
+
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
 
@@ -103,13 +105,13 @@ chat conversation."
           (lambda (text)
             (funcall partial-callback text)
             (with-current-buffer request-buffer
-              (save-excursion
-                (goto-char end-marker)
-                (insert (concat "\n" llm-buffer-separator "\n"))
-              (llm-request-mode 0)))))
+              ;; TODO: Insert separator.
+              (llm-request-mode 0))))
          ;; TODO: This message could contain useful information.
          ;; TODO: This message, and the insertion, could be in a highlighted face.
-         (waiting-text "[Waiting for LLM...]")
+         (chunk-count (length (llm-chat-prompt-interactions prompt)))
+         (waiting-text (format "[Sending %d chunks.  Waiting for LLM...]"
+                               chunk-count))
          (error-callback
           (lambda (_ msg)
             (with-current-buffer request-buffer
