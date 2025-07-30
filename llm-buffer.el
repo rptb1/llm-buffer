@@ -29,6 +29,14 @@
 
 (defcustom llm-buffer-separator "^---$"
   "Regular expression use to divide buffers into chat chunks."
+  :type 'regexp
+  ;; Can be overriden in e.g. file local variables.
+  :local t)
+
+(defcustom llm-buffer-comment "^--- .*\n?"
+  "Regular expression used to identify commentary which is not to
+be sent to the LLM."
+  :type 'regexp
   ;; Can be overriden in e.g. file local variables.
   :local t)
 
@@ -69,9 +77,12 @@
   "Form an LLM prompt from the region or buffer."
   (let* (;; The input text
          (text
-          (if (use-region-p)
-              (buffer-substring-no-properties (region-beginning) (region-end))
-            (buffer-substring-no-properties (point-min) (point-max))))
+          ;; TODO: Consider comment replacement *after* splitting?
+          (replace-regexp-in-string
+           llm-buffer-comment ""
+           (if (use-region-p)
+               (buffer-substring-no-properties (region-beginning) (region-end))
+             (buffer-substring-no-properties (point-min) (point-max)))))
          ;; Try to split the text into chunks with the separator
          (split (split-string text llm-buffer-separator nil "\\s-*"))
          ;; Drop or add empty last element to allow chat to continue
