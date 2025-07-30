@@ -112,6 +112,28 @@ placeholder while waiting the LLM to respond."
                 (format " at temperature %g" temperature)
               ""))))
 
+(defun llm-buffer-inserter (buffer beg end)
+  "Make an insertion callback for llm-chat-streaming that appends
+the LLM output to a region.  The first call to the callback
+replaces the entire region, including the waiting message, but
+subsequent calls only append to the region, so that it can be
+edited by the user while the LLM is still generating."
+  (let ((prefix ""))
+    (lambda (text)
+      (with-current-buffer buffer
+        ;; TODO: prefix should always be a prefix
+        (if (and (not (string-empty-p prefix))
+                 (string-prefix-p prefix text))
+            (save-excursion
+              (goto-char end)
+              (insert
+               (propertize (substring text (length prefix))
+                           'face 'llm-buffer-partial
+                           'font-lock-face 'llm-buffer-partial)))
+          (replace-region-contents beg end (lambda () text))
+          (add-text-properties beg end llm-buffer-partial-props))
+        (setq prefix text)))))
+
 (defun llm-buffer (&optional centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
 
@@ -132,11 +154,7 @@ temperature of 0.75."
          (beg-marker (copy-marker end-marker nil))
          ;; Insert the partial result into the buffer by replacing the
          ;; previous partial result.
-         (partial-callback
-          (lambda (text)
-            (with-current-buffer request-buffer
-              (replace-region-contents beg-marker end-marker (lambda () text))
-              (add-text-properties beg-marker end-marker llm-buffer-partial-props))))
+         (partial-callback (llm-buffer-inserter request-buffer beg-marker end-marker))
          ;; When the final result arrives, put it in the buffer and cancel the mode.
          (response-callback
           (lambda (text)
