@@ -112,7 +112,7 @@ placeholder while waiting the LLM to respond."
                 (format " at temperature %g" temperature)
               ""))))
 
-(defun llm-buffer (centitemp)
+(defun llm-buffer (&optional centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
 
 If the buffer contains lines like \"---\" then the first chunk is
@@ -148,13 +148,6 @@ temperature of 0.75."
          (waiting-text (propertize (llm-buffer-waiting-text prompt)
                                    'face 'llm-buffer-waiting
                                    'font-lock-face 'llm-buffer-waiting))
-         ;; Cancel the LLM request if the waiting text is killed.
-         (timer
-          (run-at-time t 1
-                       (lambda ()
-                         (when (equal beg-marker end-marker)
-                           (with-current-buffer request-buffer
-                             (llm-buffer-cancel))))))
          (error-callback
           (lambda (_ msg)
             (with-current-buffer request-buffer
@@ -164,7 +157,15 @@ temperature of 0.75."
               (when (string= (buffer-substring beg-marker end-marker) waiting-text)
                 (delete-region beg-marker end-marker)))
             (error msg))))
+    ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
+    ;; Cancel the LLM request if the waiting text is killed.
+    (run-at-time t 1
+                 (lambda ()
+                   (when (equal beg-marker end-marker)
+                     (with-current-buffer request-buffer
+                       (llm-buffer-cancel)))))
+    ;; Send the request to the LLM
     (llm-request-mode 1)
     (setq llm-buffer-request
           (llm-chat-streaming llm-buffer-provider prompt
