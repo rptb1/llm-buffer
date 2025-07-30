@@ -2,8 +2,6 @@
 ;;;
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
 
-(provide 'llm-buffer)
-
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
 
@@ -251,5 +249,7 @@ temperature of 0.75."
 ;;       (ellama-stream text)))))
 
 ;; (define-key global-map (kbd "C-c e") 'ellama-buffer)
+
+(provide 'llm-buffer)
 
 ;; End.
