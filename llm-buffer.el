@@ -144,7 +144,8 @@ temperature of 0.75."
             (remove-text-properties beg-marker end-marker llm-buffer-partial-props)
             (with-current-buffer request-buffer
               ;; TODO: Insert separator.
-              (llm-request-mode 0))))
+              (llm-request-mode 0)
+              (setq llm-buffer-request nil))))
          (waiting-text (propertize (llm-buffer-waiting-text prompt)
                                    'face 'llm-buffer-waiting
                                    'font-lock-face 'llm-buffer-waiting))
@@ -159,12 +160,16 @@ temperature of 0.75."
             (error msg))))
     ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
-    ;; Cancel the LLM request if the waiting text is killed.
-    (run-at-time t 1
-                 (lambda ()
-                   (when (equal beg-marker end-marker)
-                     (with-current-buffer request-buffer
-                       (llm-buffer-cancel)))))
+    ;; Cancel the LLM request if the output text is killed.
+    (letrec ((timer (run-at-time t 5
+                                 (lambda ()
+                                   (with-current-buffer request-buffer
+                                     (when (equal beg-marker end-marker)
+                                       (llm-buffer-cancel))
+                                     (unless llm-buffer-request
+                                       (cancel-timer timer)))))))
+      (add-hook 'kill-buffer-hook
+                (lambda () (when (timerp timer) (cancel-timer timer)))))
     ;; Send the request to the LLM
     (llm-request-mode 1)
     (setq llm-buffer-request
