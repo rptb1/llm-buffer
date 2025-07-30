@@ -98,6 +98,20 @@
      (t
       (llm-make-chat-prompt text :temperature temperature)))))
 
+(defun llm-buffer-waiting-text (prompt)
+  "Compose waiting message text to insert into the buffer as a
+placeholder while waiting the LLM to respond."
+  (let ((chunk-count (length (llm-chat-prompt-interactions prompt)))
+        (temperature (llm-chat-prompt-temperature prompt)))
+    (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
+            (if (llm-chat-prompt-context prompt)
+                "system prompt and "
+              "")
+            chunk-count
+            (if temperature
+                (format " at temperature %g" temperature)
+              ""))))
+
 (defun llm-buffer (centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
 
@@ -116,8 +130,6 @@ temperature of 0.75."
          (request-buffer (current-buffer))
          (end-marker (copy-marker (point) t))
          (beg-marker (copy-marker end-marker nil))
-         ;; The partial result is built up in this variable as it arrives
-         (partial-text "")
          ;; Insert the partial result into the buffer by replacing the
          ;; previous partial result.
          (partial-callback
@@ -133,21 +145,9 @@ temperature of 0.75."
             (with-current-buffer request-buffer
               ;; TODO: Insert separator.
               (llm-request-mode 0))))
-         ;; TODO: This message could contain useful information.
-         ;; TODO: This message, and the insertion, could be in a highlighted face.
-         (chunk-count (length (llm-chat-prompt-interactions prompt)))
-         (temperature (llm-chat-prompt-temperature prompt))
-         (waiting-text (propertize
-                        (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
-                                (if (llm-chat-prompt-context prompt)
-                                    "system prompt and "
-                                  "")
-                                chunk-count
-                                (if temperature
-                                    (format " at temperature %g" temperature)
-                                  ""))
-                        'face 'llm-buffer-waiting
-                        'font-lock-face 'llm-buffer-waiting))
+         (waiting-text (propertize (llm-buffer-waiting-text prompt)
+                                   'face 'llm-buffer-waiting
+                                   'font-lock-face 'llm-buffer-waiting))
          ;; Cancel the LLM request if the waiting text is killed.
          (timer
           (run-at-time t 1
