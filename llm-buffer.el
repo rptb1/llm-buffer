@@ -38,13 +38,14 @@ be sent to the LLM."
   ;; Can be overriden in e.g. file local variables.
   :local t)
 
-(defvar-local llm-buffer-request nil)
+(defvar-local llm-buffer-canceller nil)
 
 (defun llm-buffer-cancel ()
   "Cancel the LLM request that's inserting into the buffer."
-  (when llm-buffer-request
-    (llm-cancel-request llm-buffer-request)
-    (setq llm-buffer-request nil)))
+  (when llm-buffer-canceller
+    (funcall llm-buffer-canceller)
+    ;(setq llm-buffer-canceller nil)
+    ))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
 ;; sure I like it.
@@ -164,11 +165,15 @@ temperature of 0.75."
          ;; Insert the partial result into the buffer by replacing the
          ;; previous partial result.
          (partial-callback (llm-buffer-inserter request-buffer beg-marker end-marker))
+         (finish-text
+          (lambda ()
+            ;; TODO: Could incorporate remove-waiting?
+            (remove-text-properties beg-marker end-marker llm-buffer-partial-props)))
          ;; When the final result arrives, put it in the buffer and cancel the mode.
          (response-callback
           (lambda (text)
             (funcall partial-callback text)
-            (remove-text-properties beg-marker end-marker llm-buffer-partial-props)
+            (funcall finish-text)
             (with-current-buffer request-buffer
               ;; TODO: Insert separator.
               (llm-request-mode 0)
@@ -176,18 +181,24 @@ temperature of 0.75."
          (waiting-text (propertize (llm-buffer-waiting-text prompt)
                                    'face 'llm-buffer-waiting
                                    'font-lock-face 'llm-buffer-waiting))
+         (remove-waiting
+          ;; Remove the placeholder if the request was cancelled
+          ;; before any text arrived.
+          (lambda ()
+            (with-current-buffer request-buffer
+              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
+                (delete-region beg-marker end-marker)))))
          (error-callback
           (lambda (_ msg)
-            (with-current-buffer request-buffer
-              (llm-request-mode 0)
-              ;; Remove the placeholder if the request was cancelled
-              ;; before any text arrived.
-              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
-                (delete-region beg-marker end-marker)))
+            (with-current-buffer request-buffer (llm-request-mode 0))
+            (funcall remove-waiting)
+            (funcall finish-text)
+            ;; TODO: Maybe the error message should be inserted?
             (error msg))))
     ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
     ;; Cancel the LLM request if the output text is killed.
+    ;; TODO: What happens to the request if the whole buffer is killed?
     (letrec ((timer (run-at-time t 5
                                  (lambda ()
                                    (with-current-buffer request-buffer
@@ -197,13 +208,18 @@ temperature of 0.75."
                                        (cancel-timer timer)))))))
       (add-hook 'kill-buffer-hook
                 (lambda () (when (timerp timer) (cancel-timer timer)))))
-    ;; Send the request to the LLM
+    ;; Send the request to the LLM, setting up a cancel operation.
     (llm-request-mode 1)
-    (setq llm-buffer-request
-          (llm-chat-streaming llm-buffer-provider prompt
-                                    partial-callback
-                                    response-callback
-                                    error-callback))))
+    (let ((request 
+           (llm-chat-streaming llm-buffer-provider prompt
+                               partial-callback
+                               response-callback
+                               error-callback)))
+      (setq llm-buffer-canceller
+            (lambda ()
+              (llm-cancel-request request)
+              (funcall remove-waiting)
+              (funcall finish-text))))))
 
 ;; Llama LLM integration
 ;; Requires llama-server running locally, e.g. ::
