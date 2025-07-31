@@ -197,8 +197,8 @@ temperature of 0.75."
             (error msg))))
     ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
-    ;; Cancel the LLM request if the output text is killed.
-    ;; TODO: What happens to the request if the whole buffer is killed?
+    ;; Cancel the LLM request if the output text is killed.  This also
+    ;; catches the case where the whole buffer is killed.
     (letrec ((timer (run-at-time t 5
                                  (lambda ()
                                    (with-current-buffer request-buffer
