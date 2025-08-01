@@ -2,6 +2,9 @@
 ;;;
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
 ;;;
+;;; Recommended:
+;;; (define-key global-map (kbd "C-c e") 'ellama-buffer)
+;;;
 ;;; TODO:
 ;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308
 ;;; suggests a list of non-standard params.  There should be a way of
@@ -31,6 +34,9 @@
 
 ;; Requires llama-server running locally, e.g. ::
 ;;   ./build/bin/llama-server -m models/Meta-Lllama.gguf
+;;
+;; On Tails, requieres plz-curl-default-args has "--proxy ''" so that
+;; the LLM module can talk to localhost.
 
 (defcustom llm-buffer-provider
   (make-llm-openai-compatible :url "http://127.0.0.1:8080")
@@ -50,7 +56,9 @@ be sent to the LLM."
   ;; Can be overriden in e.g. file local variables.
   :local t)
 
-(defvar-local llm-buffer-canceller nil)
+(defvar-local llm-buffer-canceller nil
+  "When non-nil, there is an LLM request running in the buffer,
+and this function can be called to cancel it.")
 
 (defun llm-buffer-cancel ()
   "Cancel the LLM request that's inserting into the buffer."
@@ -84,6 +92,7 @@ be sent to the LLM."
 ;; TODO: This is where things should be clever, e.g. breaking an RST
 ;; document into sections, looing for temperature hints, etc.  Perhaps
 ;; dispatch by mode.
+
 (defun llm-buffer-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer."
   (let* (;; The input text
@@ -95,14 +104,7 @@ be sent to the LLM."
                (buffer-substring-no-properties (region-beginning) (region-end))
              (buffer-substring-no-properties (point-min) (point-max)))))
          ;; Try to split the text into parts with the separator
-         (split (split-string text llm-buffer-separator nil "\\s-*"))
-         ;; Drop or add empty last element to allow chat to continue
-         (split-length (length split))
-         (parts
-          (cond
-           ((= (* (/ split-length 2) 2) split-length) split)
-           ((string= (car (last split)) "") (butlast split))
-           (t (append split '("")))))
+         (parts (split-string text llm-buffer-separator nil "\\s-*"))
          (temperature (when centitemp (/ centitemp 100.0)))
          ;; Possible system prompt buffer
          (sys (get-buffer "system-prompt")))
@@ -110,15 +112,34 @@ be sent to the LLM."
     (cond
      ;; Check if the text contains the split regexp
      ((> (length parts) 1)
-      (llm-make-chat-prompt (cdr parts) :context (car parts) :temperature temperature))
+
+      (let* ((system (car parts))
+             (parts (cdr parts))
+             ;; Parts must have odd length, so append or remove empty
+             ;; last part as necessary.
+             (parts
+              (cond
+               ((= (mod (length parts) 2) 1) parts)
+               ((string= (car (last parts)) "") (butlast parts))
+               (t (append parts '(""))))))
+        (llm-make-chat-prompt parts
+                              :context system :temperature temperature)))
+
      ;; Use the content of the "system-prompt" buffer if it exists
      (sys
       (llm-make-chat-prompt text
                             :context (with-current-buffer sys (buffer-string))
                             :temperature temperature))
+
      ;; Otherwise send the whole text
      (t
       (llm-make-chat-prompt text :temperature temperature)))))
+
+(defvar-local llm-buffer-to-prompt #'llm-buffer-to-prompt
+  "Form an llm-chat-prompt from the region or buffer.
+
+This function may be overriden per buffer, so that buffers can
+use different kinds of markup.")
 
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
@@ -185,13 +206,28 @@ the request in hundredths, e.g. a prefix argument of 75 is a
 temperature of 0.75."
   (interactive "P")
   (when llm-buffer-canceller (funcall llm-buffer-canceller))
-  (let* ((prompt (llm-buffer-to-prompt centitemp))
+  (let* ((prompt (funcall llm-buffer-to-prompt centitemp))
+
          ;; Remember where to insert the results
          (request-buffer (current-buffer))
          (end-marker (copy-marker (point) t))
          (beg-marker (copy-marker end-marker nil))
-         ;; Insert the partial result into the buffer by replacing the
-         ;; previous partial result.
+
+         ;; Set up a waiting message to be inserted while waiting for
+         ;; a response from the LLM.
+         (waiting-text (propertize (llm-buffer-waiting-text prompt)
+                                   'face 'llm-buffer-waiting
+                                   'font-lock-face 'llm-buffer-waiting))
+         (remove-waiting
+          ;; Remove the placeholder if the request was cancelled
+          ;; before any text arrived.
+          (lambda ()
+            (with-current-buffer request-buffer
+              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
+                (delete-region beg-marker end-marker)))))
+
+         ;; Set up callbacks to receive results from the LLM via
+         ;; llm-chat-streaming.
          (partial-callback (llm-buffer-inserter request-buffer beg-marker end-marker))
          (finish-text
           (lambda ()
@@ -206,16 +242,6 @@ temperature of 0.75."
               ;; TODO: Insert separator.
               (llm-request-mode 0)
               (setq llm-buffer-canceller nil))))
-         (waiting-text (propertize (llm-buffer-waiting-text prompt)
-                                   'face 'llm-buffer-waiting
-                                   'font-lock-face 'llm-buffer-waiting))
-         (remove-waiting
-          ;; Remove the placeholder if the request was cancelled
-          ;; before any text arrived.
-          (lambda ()
-            (with-current-buffer request-buffer
-              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
-                (delete-region beg-marker end-marker)))))
          (error-callback
           (lambda (_ msg)
             (with-current-buffer request-buffer (llm-request-mode 0))
@@ -223,8 +249,10 @@ temperature of 0.75."
             (funcall finish-text)
             ;; TODO: Maybe the error message should be inserted?
             (error msg))))
+
     ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
+
     ;; Send the request to the LLM, setting up a cancel operation.
     (llm-request-mode 1)
     (let* ((request 
@@ -253,51 +281,6 @@ temperature of 0.75."
                              (cancel-timer timer)))))))
         (add-hook 'kill-buffer-hook
                   (lambda () (when (timerp timer) (cancel-timer timer))))))))
-
-;; Llama LLM integration
-;; Requires llama-server running locally, e.g. ::
-;;   ./build/bin/llama-server -m models/Meta-Lllama.gguf
-;;
-;; On Tails, requieres plz-curl-default-args has "--proxy ''" so that
-;; the LLM module can talk to localhost.
-;;
-;; Test with (llm-chat (make-llm-openai-compatible :url "http://127.0.0.1:8080") (llm-make-chat-prompt "Who are you?"))
-;;
-;; I'm not using most of ellama, just a way to extend the current
-;; buffer in a context-free manner, by sending it to the LLM.  See
-;; <https://elpa.gnu.org/packages/ellama.html>.
-
-;;(require 'llm)
-;;(require 'llm-openai)
-;; (require 'ellama)
-
-;; ;; Send the current region or buffer, scheduling the response to
-;; ;; arrive at the point.  If the text contains "---" then split it into
-;; ;; a system prompt and conversation at each subsequent "---".  Or if
-;; ;; there's a buffer called "system-prompt" use that.  Otherwise send
-;; ;; the whole buffer without specifying a system prompt.
-;; (defun ellama-buffer ()
-;;   (interactive)
-;;   (let* ((text
-;;           (if (use-region-p)
-;;               (buffer-substring-no-properties (region-beginning) (region-end))
-;;             (buffer-substring-no-properties (point-min) (point-max))))
-;;          (split (split-string text "^---$" nil "\\s-*"))
-;;          ;; Drop empty last element to allow for trailing separator
-;;          (texts (if (string= (car (last split)) "") (butlast split) split))
-;;          (sys (get-buffer "system-prompt")))
-;;     (cond
-;;      ;; Check if the text contains the split regexp
-;;      ((> (length texts) 1)
-;;       (ellama-stream (cdr texts) :system (car texts)))
-;;      ;; Use the content of the "system-prompt" buffer if it exists
-;;      (sys
-;;       (ellama-stream text :system (with-current-buffer sys (buffer-string))))
-;;      ;; Send the whole text
-;;      (t 
-;;       (ellama-stream text)))))
-
-;; (define-key global-map (kbd "C-c e") 'ellama-buffer)
 
 (provide 'llm-buffer)
 
