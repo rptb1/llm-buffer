@@ -3,7 +3,15 @@
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
 ;;;
 ;;; TODO:
-;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308 suggests a list of non-standard params.  There should be a way of specifying arbitrary parameters like this.
+;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308
+;;; suggests a list of non-standard params.  There should be a way of
+;;; specifying arbitrary parameters like this.
+;;;
+;;; TODO: It might be important to retain the same llm-chat-prompt
+;;; object between requests so that the LLM can cache.  That doesn't
+;;; seem to matter to llama-cpp's llama-server.  To do that, we could
+;;; maintain the object in a buffer local variable and update it,
+;;; rather than generating a new one.
 
 (require 'cl-lib)
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
