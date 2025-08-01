@@ -1,6 +1,9 @@
 ;;; llm-buffer -- a tool for feeding structured buffers to an LLM -*- lexical-binding: t -*-
 ;;;
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
+;;;
+;;; TODO:
+;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308 suggests a list of non-standard params.  There should be a way of specifying arbitrary parameters like this.
 
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
