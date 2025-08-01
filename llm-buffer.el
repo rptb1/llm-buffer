@@ -44,7 +44,7 @@ be sent to the LLM."
   "Cancel the LLM request that's inserting into the buffer."
   (when llm-buffer-canceller
     (funcall llm-buffer-canceller)
-    ;(setq llm-buffer-canceller nil)
+    (setq llm-buffer-canceller nil)
     ))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
@@ -155,8 +155,7 @@ A prefix argument may be used to specify the LLM temperature for
 the request in hundredths, e.g. a prefix argument of 75 is a
 temperature of 0.75."
   (interactive "P")
-  (when llm-buffer-canceller
-    (error "LLM request already running."))
+  (when llm-buffer-canceller (funcall llm-buffer-canceller))
   (let* ((prompt (llm-buffer-to-prompt centitemp))
          ;; Remember where to insert the results
          (request-buffer (current-buffer))
@@ -197,29 +196,34 @@ temperature of 0.75."
             (error msg))))
     ;; Insert the waiting text
     (replace-region-contents beg-marker end-marker (lambda () waiting-text))
-    ;; Cancel the LLM request if the output text is killed.  This also
-    ;; catches the case where the whole buffer is killed.
-    (letrec ((timer (run-at-time t 5
-                                 (lambda ()
-                                   (with-current-buffer request-buffer
-                                     (when (equal beg-marker end-marker)
-                                       (llm-buffer-cancel))
-                                     (unless llm-buffer-canceller
-                                       (cancel-timer timer)))))))
-      (add-hook 'kill-buffer-hook
-                (lambda () (when (timerp timer) (cancel-timer timer)))))
     ;; Send the request to the LLM, setting up a cancel operation.
     (llm-request-mode 1)
-    (let ((request 
-           (llm-chat-streaming llm-buffer-provider prompt
-                               partial-callback
-                               response-callback
-                               error-callback)))
-      (setq llm-buffer-canceller
+    (let* ((request 
+            (llm-chat-streaming llm-buffer-provider prompt
+                                partial-callback
+                                response-callback
+                                error-callback))
+           (canceller
             (lambda ()
               (llm-cancel-request request)
               (funcall remove-waiting)
-              (funcall finish-text))))))
+              (funcall finish-text))))
+      (setq llm-buffer-canceller canceller)
+      ;; Cancel the LLM request if the output text is killed.  This also
+      ;; catches the case where the whole buffer is killed.
+      (letrec ((timer (run-at-time
+                       t 5
+                       (lambda ()
+                         (with-current-buffer request-buffer
+                           ;; Is the request still running?
+                           (if (eq llm-buffer-canceller canceller)
+                               ;; Is the output region still there?
+                               (when (equal beg-marker end-marker)
+                                 (llm-buffer-cancel))
+                             ;; Request isn't running, so kill timer.
+                             (cancel-timer timer)))))))
+        (add-hook 'kill-buffer-hook
+                  (lambda () (when (timerp timer) (cancel-timer timer))))))))
 
 ;; Llama LLM integration
 ;; Requires llama-server running locally, e.g. ::
