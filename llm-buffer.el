@@ -30,7 +30,7 @@
   :type '(sexp :validate llm-standard-provider-p))
 
 (defcustom llm-buffer-separator "^---$"
-  "Regular expression use to divide buffers into chat chunks."
+  "Regular expression use to divide buffers into chat parts."
   :type 'regexp
   ;; Can be overriden in e.g. file local variables.
   :local t)
@@ -86,11 +86,11 @@ be sent to the LLM."
            (if (use-region-p)
                (buffer-substring-no-properties (region-beginning) (region-end))
              (buffer-substring-no-properties (point-min) (point-max)))))
-         ;; Try to split the text into chunks with the separator
+         ;; Try to split the text into parts with the separator
          (split (split-string text llm-buffer-separator nil "\\s-*"))
          ;; Drop or add empty last element to allow chat to continue
          (split-length (length split))
-         (chunks
+         (parts
           (cond
            ((= (* (/ split-length 2) 2) split-length) split)
            ((string= (car (last split)) "") (butlast split))
@@ -101,8 +101,8 @@ be sent to the LLM."
     ;; Form a prompt
     (cond
      ;; Check if the text contains the split regexp
-     ((> (length chunks) 1)
-      (llm-make-chat-prompt (cdr chunks) :context (car chunks) :temperature temperature))
+     ((> (length parts) 1)
+      (llm-make-chat-prompt (cdr parts) :context (car parts) :temperature temperature))
      ;; Use the content of the "system-prompt" buffer if it exists
      (sys
       (llm-make-chat-prompt text
@@ -115,27 +115,33 @@ be sent to the LLM."
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
 placeholder while waiting the LLM to respond."
-  (let ((chunk-count (length (llm-chat-prompt-interactions prompt)))
-        (temperature (llm-chat-prompt-temperature prompt))
-        (token-count
-         (cl-reduce
-          #'+
-          (mapcar
-           (lambda (interaction)
-             (llm-count-tokens llm-buffer-provider
-                               (llm-chat-prompt-interaction-content interaction)))
-           (llm-chat-prompt-interactions prompt)))))
+  ;; NOTE: Nothing in this text is necessary to the function of the
+  ;; rest of the llm-buffer module, so it could be simplified.
+  (let* ((part-count (length (llm-chat-prompt-interactions prompt)))
+         (temperature (llm-chat-prompt-temperature prompt))
+         (interactions (llm-chat-prompt-interactions prompt))
+         (token-count
+          (cl-reduce
+           #'+
+           (mapcar
+            (lambda (interaction)
+              (llm-count-tokens llm-buffer-provider
+                                (llm-chat-prompt-interaction-content interaction)))
+            interactions)))
+         (last (llm-chat-prompt-interaction-content (car (last interactions))))
+         (empty-last (string= last "")))
     ;; TODO: Could include provider or model name rather than just "LLM".
-    (format "[Sending approx %d tokens from %s%d chunks%s.  Waiting for LLM...]"
+    (format "[Sending approx %d tokens from %s%s parts%s.  Waiting for LLM...]"
             token-count
             (if (llm-chat-prompt-context prompt)
                 "system prompt and "
               "")
-            chunk-count
+            (if empty-last
+                (format "%d+1" (- part-count 1))
+              part-count)
             (if temperature
                 (format " at temperature %g" temperature)
               ""))))
-
 
 (defun llm-buffer-inserter (buffer beg end)
   "Make an insertion callback for llm-chat-streaming that appends
@@ -162,8 +168,8 @@ edited by the user while the LLM is still generating."
 (defun llm-buffer (&optional centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
 
-If the buffer contains lines like \"---\" then the first chunk is
-sent as the system prompt, and the remaining chunks are sent as a
+If the buffer contains lines like \"---\" then the first part is
+sent as the system prompt, and the remaining parts are sent as a
 chat conversation.
 
 A prefix argument may be used to specify the LLM temperature for
