@@ -5,6 +5,7 @@
 ;;; TODO:
 ;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308 suggests a list of non-standard params.  There should be a way of specifying arbitrary parameters like this.
 
+(require 'cl-lib)
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
 
@@ -115,8 +116,17 @@ be sent to the LLM."
   "Compose waiting message text to insert into the buffer as a
 placeholder while waiting the LLM to respond."
   (let ((chunk-count (length (llm-chat-prompt-interactions prompt)))
-        (temperature (llm-chat-prompt-temperature prompt)))
-    (format "[Sending %s%d chunks%s.  Waiting for LLM...]"
+        (temperature (llm-chat-prompt-temperature prompt))
+        (token-count
+         (cl-reduce
+          #'+
+          (mapcar
+           (lambda (interaction)
+             (llm-count-tokens llm-buffer-provider
+                               (llm-chat-prompt-interaction-content interaction)))
+           (llm-chat-prompt-interactions prompt)))))
+    (format "[Sending approx %d tokens from %s%d chunks%s.  Waiting for LLM...]"
+            token-count
             (if (llm-chat-prompt-context prompt)
                 "system prompt and "
               "")
@@ -124,6 +134,7 @@ placeholder while waiting the LLM to respond."
             (if temperature
                 (format " at temperature %g" temperature)
               ""))))
+
 
 (defun llm-buffer-inserter (buffer beg end)
   "Make an insertion callback for llm-chat-streaming that appends
