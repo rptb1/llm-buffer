@@ -155,7 +155,7 @@ A prefix argument may be used to specify the LLM temperature for
 the request in hundredths, e.g. a prefix argument of 75 is a
 temperature of 0.75."
   (interactive "P")
-  (when llm-buffer-request
+  (when llm-buffer-canceller
     (error "LLM request already running."))
   (let* ((prompt (llm-buffer-to-prompt centitemp))
          ;; Remember where to insert the results
@@ -177,7 +177,7 @@ temperature of 0.75."
             (with-current-buffer request-buffer
               ;; TODO: Insert separator.
               (llm-request-mode 0)
-              (setq llm-buffer-request nil))))
+              (setq llm-buffer-canceller nil))))
          (waiting-text (propertize (llm-buffer-waiting-text prompt)
                                    'face 'llm-buffer-waiting
                                    'font-lock-face 'llm-buffer-waiting))
@@ -204,7 +204,7 @@ temperature of 0.75."
                                    (with-current-buffer request-buffer
                                      (when (equal beg-marker end-marker)
                                        (llm-buffer-cancel))
-                                     (unless llm-buffer-request
+                                     (unless llm-buffer-canceller
                                        (cancel-timer timer)))))))
       (add-hook 'kill-buffer-hook
                 (lambda () (when (timerp timer) (cancel-timer timer)))))
