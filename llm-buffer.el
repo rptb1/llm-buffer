@@ -93,8 +93,17 @@ and this function can be called to cancel it.")
 ;; document into sections, looing for temperature hints, etc.  Perhaps
 ;; dispatch by mode.
 
-(defun llm-buffer-to-prompt (&optional centitemp)
-  "Form an LLM prompt from the region or buffer."
+(defun llm-buffer-split (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by splitting the
+buffer at the regular expression in llm-buffer-separator.
+
+The first part is sent as a system prompt.  The rest are sent as
+a chat conversation, between the user and the LLM as assistant.
+If necessary, an empty user prompt is appended.
+
+If there are no separators, the whole buffer is sent.  And if a
+buffer named system-prompt exists, it is sent as a system
+prompt."
   (let* (;; The input text
          (text
           ;; TODO: Consider comment replacement *after* splitting?
@@ -135,7 +144,7 @@ and this function can be called to cancel it.")
      (t
       (llm-make-chat-prompt text :temperature temperature)))))
 
-(defvar-local llm-buffer-to-prompt #'llm-buffer-to-prompt
+(defvar-local llm-buffer-to-prompt #'llm-buffer-split
   "Form an llm-chat-prompt from the region or buffer.
 
 This function may be overriden per buffer, so that buffers can
