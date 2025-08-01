@@ -150,6 +150,41 @@ prompt."
 This function may be overriden per buffer, so that buffers can
 use different kinds of markup.")
 
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+chat-like markers at the beginning of lines like \"user:\" and
+\"assistant:\", and sending what follows as a conversation.  If
+there is a marker like \"system:\" then what follows is sent as a
+system prompt.
+
+So an example chat buffer might look like this:
+
+  This is an example buffer.  This text is not sent because it is
+  before the first marker.
+
+  system: Your name is Bob.
+  user: What is your name?
+  assistant: My name is Bob."
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt)))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
+        (let ((role (intern (match-string 1)))
+              (text-start (+ (match-end 1) 1)))
+          (if (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
+              (goto-char (match-beginning 1))
+            (goto-char end))
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
 placeholder while waiting the LLM to respond."
