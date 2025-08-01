@@ -125,6 +125,7 @@ placeholder while waiting the LLM to respond."
              (llm-count-tokens llm-buffer-provider
                                (llm-chat-prompt-interaction-content interaction)))
            (llm-chat-prompt-interactions prompt)))))
+    ;; TODO: Could include provider or model name rather than just "LLM".
     (format "[Sending approx %d tokens from %s%d chunks%s.  Waiting for LLM...]"
             token-count
             (if (llm-chat-prompt-context prompt)
