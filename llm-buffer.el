@@ -185,6 +185,51 @@ So an example chat buffer might look like this:
       (llm-chat-prompt-append-response prompt ""))
     prompt))
 
+(defun llm-buffer-markup-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+special markup, which can be within the comments of whatever
+language is in the buffer, allowing for chats to be formed within
+source code or structured documents.
+
+Each part starts on the line after a marker like
+\"@llm-start(ROLE)\" and ends on the line before a marker like
+\"@llm-end\".  ROLE must be system, user, or assistant.  The
+first system part is sent as a system prompt.
+
+So an example buffer might look like this:
+
+  This text will be be ignored.
+
+  /* @llm-start(system) */
+  Your name is Bob.
+  /* @llm-end */
+
+  This text will not be sent either.
+
+  .. @llm-start(user)
+  What is your name?"
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt)))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "@llm-start(\\(system\\|user\\|assistant\\))" end t)
+        (forward-line 1)
+        (let ((role (intern (match-string 1)))
+              (text-start (point)))
+          (if (re-search-forward "@llm-end" end t)
+              (forward-line 0)
+            (goto-char end))
+          ;; TODO: Too much in common with llm-buffer-chat-to-prompt
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))          
+    
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
 placeholder while waiting the LLM to respond."
