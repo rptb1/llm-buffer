@@ -239,13 +239,16 @@ placeholder while waiting the LLM to respond."
          (temperature (llm-chat-prompt-temperature prompt))
          (interactions (llm-chat-prompt-interactions prompt))
          (token-count
-          (cl-reduce
-           #'+
-           (mapcar
-            (lambda (interaction)
-              (llm-count-tokens llm-buffer-provider
-                                (llm-chat-prompt-interaction-content interaction)))
-            interactions)))
+          (+
+           (cl-reduce
+            #'+
+            (mapcar
+             (lambda (interaction)
+               (llm-count-tokens llm-buffer-provider
+                                 (llm-chat-prompt-interaction-content interaction)))
+             interactions))
+           (llm-count-tokens llm-buffer-provider
+                             (or (llm-chat-prompt-context prompt) ""))))
          (last (llm-chat-prompt-interaction-content (car (last interactions))))
          (empty-last (string= last "")))
     ;; TODO: Could include provider or model name rather than just "LLM".
