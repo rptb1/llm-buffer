@@ -150,6 +150,34 @@ prompt."
 This function may be overriden per buffer, so that buffers can
 use different kinds of markup.")
 
+(defun llm-buffer-markers-to-prompt (start-regexp &optional end-regexp centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+text between start-regexp and end-regexp (or another start-regexp
+if not supplied).  The start-regexp should return a match 1 of
+either \"system\", \"user\" or \"assistant\" to indicate the role
+of the part.  The first \"system\" part is used as the context
+field in the prompt, and subsequent system parts are ignored."
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt
+                  :temperature (when centitemp (/ centitemp 100.0)))))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward start-regexp end t)
+        (let ((role (intern (match-string 1)))
+              (text-start (match-end 0)))
+          (if (re-search-forward (or end-regexp start-regexp) end t)
+              (goto-char (match-beginning 0))
+            (goto-char end))
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+
 (defun llm-buffer-chat-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
 chat-like markers at the beginning of lines like \"user:\" and
@@ -165,25 +193,7 @@ So an example chat buffer might look like this:
   system: Your name is Bob.
   user: What is your name?
   assistant: My name is Bob."
-  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
-         (end (if (use-region-p) (region-end) (point-max)))
-         (prompt (make-llm-chat-prompt)))
-    (save-excursion
-      (goto-char start)
-      (while (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
-        (let ((role (intern (match-string 1)))
-              (text-start (+ (match-end 1) 1)))
-          (if (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
-              (goto-char (match-beginning 1))
-            (goto-char end))
-          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
-            (if (eq role 'system)
-                (setf (llm-chat-prompt-context prompt)
-                      (or (llm-chat-prompt-context prompt) text))
-              (llm-chat-prompt-append-response prompt text role))))))
-    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
-      (llm-chat-prompt-append-response prompt ""))
-    prompt))
+  (llm-buffer-markers-to-prompt "^\\(system\\|user\\|assistant\\):" nil centitemp))
 
 (defun llm-buffer-markup-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
@@ -208,27 +218,8 @@ So an example buffer might look like this:
 
   .. @llm-start(user)
   What is your name?"
-  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
-         (end (if (use-region-p) (region-end) (point-max)))
-         (prompt (make-llm-chat-prompt)))
-    (save-excursion
-      (goto-char start)
-      (while (re-search-forward "@llm-start(\\(system\\|user\\|assistant\\))" end t)
-        (forward-line 1)
-        (let ((role (intern (match-string 1)))
-              (text-start (point)))
-          (if (re-search-forward "@llm-end" end t)
-              (forward-line 0)
-            (goto-char end))
-          ;; TODO: Too much in common with llm-buffer-chat-to-prompt
-          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
-            (if (eq role 'system)
-                (setf (llm-chat-prompt-context prompt)
-                      (or (llm-chat-prompt-context prompt) text))
-              (llm-chat-prompt-append-response prompt text role))))))
-    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
-      (llm-chat-prompt-append-response prompt ""))
-    prompt))          
+  (llm-buffer-markers-to-prompt "@llm-start(\\(system\\|user\\|assistant\\)).*$"
+                                "^.*@llm-end" centitemp))
     
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
