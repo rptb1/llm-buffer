@@ -288,12 +288,10 @@ edited by the user while the LLM is still generating."
                  (string-prefix-p prefix text))
             (save-excursion
               (goto-char end)
-              (insert
-               (propertize (substring text (length prefix))
-                           'face 'llm-buffer-partial
-                           'font-lock-face 'llm-buffer-partial)))
-          (replace-region-contents beg end (lambda () text))
-          (add-text-properties beg end llm-buffer-partial-props))
+              (setq beg (point))
+              (insert (substring text (length prefix))))
+          (replace-region-contents beg end (lambda () text)))
+        (add-text-properties beg end llm-buffer-partial-props)
         (setq prefix text)))))
 
 (defun llm-buffer (&optional centitemp)
