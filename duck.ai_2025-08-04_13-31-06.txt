@@ -1,0 +1,1110 @@
+﻿This conversation was generated with Duck.ai (https://duck.ai) using OpenAI's o4-mini Model. AI chats may display inaccurate or offensive information (see https://duckduckgo.com/duckai/privacy-terms for more info).
+
+====================
+
+User prompt 1 of 13 - 8/4/2025, 11:18:13 AM:
+Please review this code:
+```
+;;; llm-buffer -- a tool for feeding structured buffers to an LLM -*- lexical-binding: t -*-
+;;;
+;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
+;;;
+;;; Recommended:
+;;; (define-key global-map (kbd "C-c e") 'ellama-buffer)
+
+(require 'cl-lib)
+(require 'llm) ; See <https://github.com/ahyatt/llm>.
+(require 'llm-openai)
+
+(defface llm-buffer-waiting '((t :inherit warning))
+  "Face used for temporary waiting message."
+  :group 'llm-buffer-faces)
+
+(defface llm-buffer-partial '((t :inherit success))
+  "Face used for partially inserted LLM response."
+  :group 'llm-buffer-faces)
+
+(defconst llm-buffer-partial-props
+  '(face llm-buffer-partial
+    font-lock-face llm-buffer-partial))
+
+;; Requires llama-server running locally, e.g. ::
+;;   ./build/bin/llama-server -m models/Meta-Lllama.gguf
+;;
+;; On Tails, requieres plz-curl-default-args has "--proxy ''" so that
+;; the LLM module can talk to localhost.
+
+(defcustom llm-buffer-provider
+  (make-llm-openai-compatible :url "http://127.0.0.1:8080")
+  "Backend LLM provider."
+  :type '(sexp :validate llm-standard-provider-p))
+
+(defcustom llm-buffer-separator "^---$"
+  "Regular expression use to divide buffers into chat parts."
+  :type 'regexp
+  ;; Can be overriden in e.g. file local variables.
+  :local t)
+
+(defcustom llm-buffer-comment "^--- .*\n?"
+  "Regular expression used to identify commentary which is not to
+be sent to the LLM."
+  :type 'regexp
+  ;; Can be overriden in e.g. file local variables.
+  :local t)
+
+(defvar-local llm-buffer-canceller nil
+  "When non-nil, there is an LLM request running in the buffer,
+and this function can be called to cancel it.")
+
+(defun llm-buffer-cancel ()
+  "Cancel the LLM request that's inserting into the buffer."
+  (when llm-buffer-canceller
+    (funcall llm-buffer-canceller)
+    (setq llm-buffer-canceller nil)
+    ))
+
+;; TODO: I inherited this overloading of quit from ellama and I'm not
+;; sure I like it.
+(defun llm-buffer-cancel-quit ()
+  "Cancel the LLM request that's inserting into the buffer and quit."
+  (interactive)
+  (llm-buffer-cancel)
+  (keyboard-quit))
+
+;; This minor mode is applied when the buffer has an active
+;; asynchronous request to the LLM that might be inserting text.  The
+;; purpose of the mode is to allow the request to be cancelled, and
+;; make it visible that this is happening.
+(define-minor-mode llm-request-mode
+  "Minor mode for buffers with active LLM requests."
+  :interactive nil
+  :lighter " LLM"
+  :keymap '(([remap keyboard-quit] . llm-buffer-cancel-quit))
+  (if llm-request-mode
+      (add-hook 'kill-buffer-hook 'llm-buffer-cancel nil t)
+    (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)
+    (llm-buffer-cancel)))
+
+;; TODO: This is where things should be clever, e.g. breaking an RST
+;; document into sections, looing for temperature hints, etc.  Perhaps
+;; dispatch by mode.
+
+(defun llm-buffer-split (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by splitting the
+buffer at the regular expression in llm-buffer-separator.
+
+The first part is sent as a system prompt.  The rest are sent as
+a chat conversation, between the user and the LLM as assistant.
+If necessary, an empty user prompt is appended.
+
+If there are no separators, the whole buffer is sent.  And if a
+buffer named system-prompt exists, it is sent as a system
+prompt."
+  (let* (;; The input text
+         (text
+          ;; TODO: Consider comment replacement *after* splitting?
+          (replace-regexp-in-string
+           llm-buffer-comment ""
+           (if (use-region-p)
+               (buffer-substring-no-properties (region-beginning) (region-end))
+             (buffer-substring-no-properties (point-min) (point-max)))))
+         ;; Try to split the text into parts with the separator
+         (parts (split-string text llm-buffer-separator nil "\\s-*"))
+         (temperature (when centitemp (/ centitemp 100.0)))
+         ;; Possible system prompt buffer
+         (sys (get-buffer "system-prompt")))
+    ;; Form a prompt
+    (cond
+     ;; Check if the text contains the split regexp
+     ((> (length parts) 1)
+
+      (let* ((system (car parts))
+             (parts (cdr parts))
+             ;; Parts must have odd length, so append or remove empty
+             ;; last part as necessary.
+             (parts
+              (cond
+               ((= (mod (length parts) 2) 1) parts)
+               ((string= (car (last parts)) "") (butlast parts))
+               (t (append parts '(""))))))
+        (llm-make-chat-prompt parts
+                              :context system :temperature temperature)))
+
+     ;; Use the content of the "system-prompt" buffer if it exists
+     (sys
+      (llm-make-chat-prompt text
+                            :context (with-current-buffer sys (buffer-string))
+                            :temperature temperature))
+
+     ;; Otherwise send the whole text
+     (t
+      (llm-make-chat-prompt text :temperature temperature)))))
+
+(defvar-local llm-buffer-to-prompt #'llm-buffer-split
+  "Form an llm-chat-prompt from the region or buffer.
+
+This function may be overriden per buffer, so that buffers can
+use different kinds of markup.")
+
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+chat-like markers at the beginning of lines like \"user:\" and
+\"assistant:\", and sending what follows as a conversation.  If
+there is a marker like \"system:\" then what follows is sent as a
+system prompt.
+
+So an example chat buffer might look like this:
+
+  This is an example buffer.  This text is not sent because it is
+  before the first marker.
+
+  system: Your name is Bob.
+  user: What is your name?
+  assistant: My name is Bob."
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt)))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
+        (let ((role (intern (match-string 1)))
+              (text-start (+ (match-end 1) 1)))
+          (if (re-search-forward "^\\(system\\|user\\|assistant\\):" end t)
+              (goto-char (match-beginning 1))
+            (goto-char end))
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+
+(defun llm-buffer-markup-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+special markup, which can be within the comments of whatever
+language is in the buffer, allowing for chats to be formed within
+source code or structured documents.
+
+Each part starts on the line after a marker like
+\"@llm-start(ROLE)\" and ends on the line before a marker like
+\"@llm-end\".  ROLE must be system, user, or assistant.  The
+first system part is sent as a system prompt.
+
+So an example buffer might look like this:
+
+  This text will be be ignored.
+
+  /* @llm-start(system) */
+  Your name is Bob.
+  /* @llm-end */
+
+  This text will not be sent either.
+
+  .. @llm-start(user)
+  What is your name?"
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt)))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "@llm-start(\\(system\\|user\\|assistant\\))" end t)
+        (forward-line 1)
+        (let ((role (intern (match-string 1)))
+              (text-start (point)))
+          (if (re-search-forward "@llm-end" end t)
+              (forward-line 0)
+            (goto-char end))
+          ;; TODO: Too much in common with llm-buffer-chat-to-prompt
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))          
+    
+(defun llm-buffer-waiting-text (prompt)
+  "Compose waiting message text to insert into the buffer as a
+placeholder while waiting the LLM to respond."
+  ;; NOTE: Nothing in this text is necessary to the function of the
+  ;; rest of the llm-buffer module, so it could be simplified.
+  (let* ((part-count (length (llm-chat-prompt-interactions prompt)))
+         (temperature (llm-chat-prompt-temperature prompt))
+         (interactions (llm-chat-prompt-interactions prompt))
+         (token-count
+          (+
+           (cl-reduce
+            #'+
+            (mapcar
+             (lambda (interaction)
+               (llm-count-tokens llm-buffer-provider
+                                 (llm-chat-prompt-interaction-content interaction)))
+             interactions))
+           (llm-count-tokens llm-buffer-provider
+                             (or (llm-chat-prompt-context prompt) ""))))
+         (last (llm-chat-prompt-interaction-content (car (last interactions))))
+         (empty-last (string= last ""))
+         ;; TODO: Investigate how to reliably work out which model
+         ;; we're talking to by testing with a multi-model server.
+         (model-name (or (and (not (string= (llm-name llm-buffer-provider) "unset"))
+                              (llm-name llm-buffer-provider))
+                         (and (member 'model-list (llm-capabilities llm-buffer-provider))
+                              (= (length (llm-models llm-buffer-provider)) 1)
+                              (car (llm-models llm-buffer-provider)))
+                         "LLM")))
+    ;; TODO: Could include provider or model name rather than just "LLM".
+    (format "[Sending approx %d tokens from %s%s parts%s.  Waiting for %s...]"
+            token-count
+            (if (llm-chat-prompt-context prompt)
+                "system prompt and "
+              "")
+            (if empty-last
+                (format "%d+1" (- part-count 1))
+              part-count)
+            (if temperature
+                (format " at temperature %g" temperature)
+              "")
+            model-name)))
+
+(defun llm-buffer-inserter (buffer beg end)
+  "Make an insertion callback for llm-chat-streaming that appends
+the LLM output to a region.  The first call to the callback
+replaces the entire region, including the waiting message, but
+subsequent calls only append to the region, so that it can be
+edited by the user while the LLM is still generating."
+  (let ((prefix ""))
+    (lambda (text)
+      (with-current-buffer buffer
+        ;; TODO: prefix should always be a prefix
+        (if (and (not (string-empty-p prefix))
+                 (string-prefix-p prefix text))
+            (save-excursion
+              (goto-char end)
+              (insert
+               (propertize (substring text (length prefix))
+                           'face 'llm-buffer-partial
+                           'font-lock-face 'llm-buffer-partial)))
+          (replace-region-contents beg end (lambda () text))
+          (add-text-properties beg end llm-buffer-partial-props))
+        (setq prefix text)))))
+
+(defun llm-buffer (&optional centitemp)
+  "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
+
+If the buffer contains lines like \"---\" then the first part is
+sent as the system prompt, and the remaining parts are sent as a
+chat conversation.
+
+A prefix argument may be used to specify the LLM temperature for
+the request in hundredths, e.g. a prefix argument of 75 is a
+temperature of 0.75."
+  (interactive "P")
+  (when llm-buffer-canceller (funcall llm-buffer-canceller))
+  (let* ((prompt (funcall llm-buffer-to-prompt centitemp))
+
+         ;; Remember where to insert the results
+         (request-buffer (current-buffer))
+         (end-marker (copy-marker (point) t))
+         (beg-marker (copy-marker end-marker nil))
+
+         ;; Set up a waiting message to be inserted while waiting for
+         ;; a response from the LLM.
+         (waiting-text (propertize (llm-buffer-waiting-text prompt)
+                                   'face 'llm-buffer-waiting
+                                   'font-lock-face 'llm-buffer-waiting))
+         (remove-waiting
+          ;; Remove the placeholder if the request was cancelled
+          ;; before any text arrived.
+          (lambda ()
+            (with-current-buffer request-buffer
+              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
+                (delete-region beg-marker end-marker)))))
+
+         ;; Set up callbacks to receive results from the LLM via
+         ;; llm-chat-streaming.
+         (partial-callback (llm-buffer-inserter request-buffer beg-marker end-marker))
+         (finish-text
+          (lambda ()
+            ;; TODO: Could incorporate remove-waiting?
+            (remove-text-properties beg-marker end-marker llm-buffer-partial-props)))
+         ;; When the final result arrives, put it in the buffer and cancel the mode.
+         (response-callback
+          (lambda (text)
+            (funcall partial-callback text)
+            (funcall finish-text)
+            (with-current-buffer request-buffer
+              ;; TODO: Insert separator.
+              (llm-request-mode 0)
+              (setq llm-buffer-canceller nil))))
+         (error-callback
+          (lambda (_ msg)
+            (with-current-buffer request-buffer (llm-request-mode 0))
+            (funcall remove-waiting)
+            (funcall finish-text)
+            ;; TODO: Maybe the error message should be inserted?
+            (error msg))))
+
+    ;; Insert the waiting text
+    (replace-region-contents beg-marker end-marker (lambda () waiting-text))
+
+    ;; Send the request to the LLM, setting up a cancel operation.
+    (llm-request-mode 1)
+    (let* ((request 
+            (llm-chat-streaming llm-buffer-provider prompt
+                                partial-callback
+                                response-callback
+                                error-callback))
+           (canceller
+            (lambda ()
+              (llm-cancel-request request)
+              (funcall remove-waiting)
+              (funcall finish-text))))
+      (setq llm-buffer-canceller canceller)
+      ;; Cancel the LLM request if the output text is killed.  This also
+      ;; catches the case where the whole buffer is killed.
+      (letrec ((timer (run-at-time
+                       t 5
+                       (lambda ()
+                         (with-current-buffer request-buffer
+                           ;; Is the request still running?
+                           (if (eq llm-buffer-canceller canceller)
+                               ;; Is the output region still there?
+                               (when (equal beg-marker end-marker)
+                                 (llm-buffer-cancel))
+                             ;; Request isn't running, so kill timer.
+                             (cancel-timer timer)))))))
+        (add-hook 'kill-buffer-hook
+                  (lambda () (when (timerp timer) (cancel-timer timer))))))))
+
+(provide 'llm-buffer)
+
+;; End.
+```
+
+o4-mini:
+## 🚀 Key Strengths
+
+- **Modular design**: Separation of prompt construction (`llm-buffer-split`, `llm-buffer-chat-to-prompt`, `llm-buffer-markup-to-prompt`) from request handling (`llm-buffer`, callbacks).  
+- **Customizable separators and comment filters**: `llm-buffer-separator` and `llm-buffer-comment` are buffer-local customizable, letting users adapt to different file formats.  
+- **Graceful cancellation**: Clear cancel functions (`llm-buffer-cancel`, `llm-buffer-cancel-quit`) and a minor mode (`llm-request-mode`) to manage active requests.  
+
+<hr>
+
+## 🛠️ Areas for Improvement
+
+### 1. Prompt-splitting Logic Complexity  
+The three prompt builders share a lot of logic. Consider unifying common behaviors:
+
+- Extract shared regex-based chunking (find markers, slice text) into a helper.  
+- Parameterize role detection to avoid duplicated loops.
+
+### 2. Separator and Comment Handling Order  
+You noted `TODO: Consider comment replacement *after* splitting?`.  
+Right now you strip comments globally before splitting. If comments can embed separators, you might want:
+
+- First split by `llm-buffer-separator`.  
+- Then strip `llm-buffer-comment` within each chunk.  
+
+This preserves intentional separators inside comments.
+
+### 3. Waiting-text and Insertion Logic  
+The logic in `llm-buffer-inserter` that checks `prefix` and replaces vs. appends is clever but hard to reason about. You could simplify by:
+
+- Always inserting the waiting text as an overlay rather than buffer text, then replacing the overlay when real data arrives.  
+- Or use temporary markers and always replace the full region on first chunk, append thereafter.
+
+### 4. Timer Management  
+The timer that checks every 5 seconds to auto-cancel feels brittle. Instead:
+
+- Use the request’s own callback hooks to detect completion/cancellation, and then cancel the timer immediately.  
+- Store the timer in a buffer-local variable so you can clean it up on buffer kill more directly.
+
+### 5. Error Reporting  
+The `error-callback` swallows the error message rather than inserting it. It might be nicer to:
+
+- Insert a visibly formatted error block (e.g., prefaced with “<Error>”) at point.  
+- Keep the buffer in `llm-request-mode` so users can retry or inspect.
+
+<hr>
+
+## 🔧 Refactored Example: Unified Prompt Builder
+
+Below is a sketch of how you might DRY up your three prompt constructors by sharing a core loop.
+
+```emacs-lisp
+(defun llm-buffer--collect-parts (start end marker-regexp extract-role-fn)
+  "Generic loop: between START and END find MARKER-REGEXP,
+call EXTRACT-ROLE-FN on each match to return (ROLE . CONTENT)."
+  (let ((parts '()))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward marker-regexp end t)
+        (let* ((role (funcall extract-role-fn))
+               (text-start (point))
+               ;; Find next marker or end
+               (next-pos (if (re-search-forward marker-regexp end t)
+                             (match-beginning 0)
+                           end))
+               (content (string-trim
+                         (buffer-substring-no-properties text-start next-pos))))
+          (push (cons role content) parts)
+          (goto-char next-pos))))
+    (nreverse parts)))
+
+(defun llm-buffer--make-chat-prompt (parts &optional context temperature)
+  "Assemble a chat prompt from PARTS = ((ROLE . TEXT) ...)."
+  (let ((prompt (make-llm-chat-prompt :context context :temperature temperature)))
+    (dolist (pr parts)
+      (llm-chat-prompt-append-response prompt (cdr pr) (car pr)))
+    ;; Ensure odd interactions
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+```
+
+You could then implement each of your prompt types by supplying the right `marker-regexp` and `extract-role-fn`, reducing duplication.
+
+<hr>
+
+## ✅ Summary of Recommendations
+
+- Consolidate shared regex-search and slicing code into helpers.  
+- Reorder comment stripping vs. splitting to preserve separators in comments when needed.  
+- Simplify waiting-text insertion with overlays or consistent replace/append logic.  
+- Manage timers explicitly by canceling them on request completion.  
+- Surface errors inline for better feedback.  
+
+These changes will make the code more maintainable, easier to extend for new prompt styles, and more robust in edge cases.
+
+--------------------
+
+User prompt 2 of 13 - 8/4/2025, 11:22:52 AM:
+Show me llm-buffer-chat-to-prompt refactored to use your unified prompt builder.
+
+o4-mini:
+## Refactored llm-buffer-chat-to-prompt Using the Unified Prompt Builder
+
+```emacs-lisp
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Refactored: Build a chat prompt by scanning for role markers."
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end   (if (use-region-p) (region-end)   (point-max)))
+         (temperature (when centitemp (/ centitemp 100.0)))
+         ;; Collect (ROLE . TEXT) pairs in order
+         (parts
+          (llm-buffer--collect-parts
+           start end
+           "^\\(system\\|user\\|assistant\\):"
+           (lambda ()
+             (intern (match-string 1)))))
+         ;; Separate out the first system prompt if present
+         (system-text (when (eq (caar parts) 'system)
+                        (cdar parts)))
+         (chat-parts (if system-text
+                         (cdr parts)
+                       parts)))
+    ;; Build and return the chat prompt
+    (llm-buffer--make-chat-prompt chat-parts system-text temperature)))
+```
+
+Explanation of the refactoring:
+
+- We use **llm-buffer--collect-parts** to scan between `start` and `end` for markers of the form `"role:"` and return a list of `(ROLE . CONTENT)`.  
+- We extract an initial **system** message if the first role is `system`.  
+- We pass the remaining `(ROLE . TEXT)` pairs, along with the optional system context and temperature, into **llm-buffer--make-chat-prompt**, which handles appending messages and ensuring the final user turn is present.
+
+--------------------
+
+User prompt 3 of 13 - 8/4/2025, 11:24:24 AM:
+Your refactored code is not equivalent to mine.  It assumes that the system prompt is the first thing in the file.
+
+o4-mini:
+## ✨ Updated llm-buffer-chat-to-prompt with Flexible System Extraction
+
+```emacs-lisp
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Refactored: Build a chat prompt by scanning for role markers, allowing
+the first SYSTEM marker anywhere to become the system context."
+  (let* ((start       (if (use-region-p) (region-beginning) (point-min)))
+         (end         (if (use-region-p) (region-end)   (point-max)))
+         (temperature (when centitemp (/ centitemp 100.0)))
+         ;; 1. Collect all (ROLE . TEXT) pairs in order
+         (parts
+          (llm-buffer--collect-parts
+           start end
+           "^\\(system\\|user\\|assistant\\):"
+           (lambda ()
+             (intern (match-string 1)))))
+         ;; 2. Find and remove the first system entry from parts
+         (system-entry
+          (seq-find (lambda (entry) (eq (car entry) 'system)) parts))
+         (system-text
+          (cdr system-entry))
+         (chat-parts
+          (if system-entry
+              ;; Remove only the first SYSTEM entry
+              (cl-remove system-entry parts :count 1 :test #'equal)
+            parts)))
+    ;; 3. Build and return the chat prompt
+    (llm-buffer--make-chat-prompt chat-parts system-text temperature)))
+```
+
+Key changes:
+
+- **Collect all markers** in sequence with `llm-buffer--collect-parts`.
+- **Locate the first** `(system . TEXT)` pair anywhere in that list using `seq-find`.
+- **Strip out** that single system entry from `parts`, leaving user/assistant interactions intact.
+- **Pass** the extracted `system-text` as context and the remaining `chat-parts` to `llm-buffer--make-chat-prompt`.
+
+--------------------
+
+User prompt 4 of 13 - 8/4/2025, 11:24:47 AM:
+Now your refactored code is *longer* than mine.
+
+o4-mini:
+## 🚀 Concise Refactoring of llm-buffer-chat-to-prompt
+
+```emacs-lisp
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Build a chat prompt, extracting the first SYSTEM marker as context."
+  (let* ((bounds     (if (use-region-p)
+                         (cons (region-beginning) (region-end))
+                       (cons (point-min) (point-max))))
+         (parts      (llm-buffer--collect-parts
+                       (car bounds) (cdr bounds)
+                       "^\\(system\\|user\\|assistant\\):"
+                       (lambda () (intern (match-string 1)))))
+         (system-pair (seq-find (lambda (p) (eq (car p) 'system)) parts))
+         (system    (cdr system-pair))
+         (chat-parts (if system-pair
+                         (cl-remove-if (lambda (p) (eq p system-pair)) parts)
+                       parts))
+         (temp       (when centitemp (/ centitemp 100.0))))
+    (llm-buffer--make-chat-prompt chat-parts system temp)))
+```
+
+This version:
+
+- Scans the buffer (or region) once for **all** `system:`, `user:`, and `assistant:` entries.
+- Grabs the **first** `system:` pair anywhere as the **system context**.
+- Feeds the remaining `(role . text)` pairs to `llm-buffer--make-chat-prompt` with an optional **temperature**.
+
+--------------------
+
+User prompt 5 of 13 - 8/4/2025, 11:25:29 AM:
+Hmm, although DRY is correct here, I'm not confident in your ability to design it well.
+
+o4-mini:
+I hear you—refactoring core prompt logic is critical, and it’s easy to introduce subtle bugs. Let’s tackle this together:
+
+1. What’s your biggest concern right now?  
+   • Losing exactly-once system-prompt semantics?  
+   • Performance or readability?  
+   • Edge cases around empty user turns?  
+
+2. Do you have any preferred constraints for the helper API? For example:  
+   • Keep to a single-pass buffer scan?  
+   • Avoid external libraries (seq, cl-remove-if)?  
+
+With a bit more detail on your priorities and preferred style, I can craft a tighter, safe refactoring that fits your workflow and buffer sizes. What would help you feel confident in the design?
+
+--------------------
+
+User prompt 6 of 13 - 8/4/2025, 11:48:43 AM:
+Here is my refactoring.  Please check it against the original and point out any errors in the update.
+```
+(defun llm-buffer-markers-to-prompt (start-regexp &optional end-regexp centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+text between start-regexp and end-regexp (or another start-regexp
+if not supplied).  The start-regexp should return a match 1 of
+either \"system\", \"user\" or \"assistant\" to indicate the role
+of the part.  The first \"system\" part is used as the context
+field in the prompt, and subsequent system parts are ignored."
+  (let* ((start (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (prompt (make-llm-chat-prompt)))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward start-regexp end t)
+        (let ((role (intern (match-string 1)))
+              (text-start (match-end 0)))
+          (if (re-search-forward (or end-regexp start-regexp) end t)
+              (goto-char (match-beginning 0))
+            (goto-char end))
+          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+            (if (eq role 'system)
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))))))
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+
+(defun llm-buffer-chat-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+chat-like markers at the beginning of lines like \"user:\" and
+\"assistant:\", and sending what follows as a conversation.  If
+there is a marker like \"system:\" then what follows is sent as a
+system prompt.
+
+So an example chat buffer might look like this:
+
+  This is an example buffer.  This text is not sent because it is
+  before the first marker.
+
+  system: Your name is Bob.
+  user: What is your name?
+  assistant: My name is Bob."
+  (llm-buffer-markers-to-prompt "^\\(system\\|user\\|assistant\\):" nil centitemp))
+
+(defun llm-buffer-markup-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+special markup, which can be within the comments of whatever
+language is in the buffer, allowing for chats to be formed within
+source code or structured documents.
+
+Each part starts on the line after a marker like
+\"@llm-start(ROLE)\" and ends on the line before a marker like
+\"@llm-end\".  ROLE must be system, user, or assistant.  The
+first system part is sent as a system prompt.
+
+So an example buffer might look like this:
+
+  This text will be be ignored.
+
+  /* @llm-start(system) */
+  Your name is Bob.
+  /* @llm-end */
+
+  This text will not be sent either.
+
+  .. @llm-start(user)
+  What is your name?"
+  (llm-buffer-markers-to-prompt "@llm-start(\\(system\\|user\\|assistant\\)).*$"
+                                "^.*@llm-end" centitemp))
+```
+
+o4-mini:
+## Issues in the Refactored Version
+
+1. Missing temperature argument  
+   Your `llm-buffer-markers-to-prompt` always does  
+     `(make-llm-chat-prompt)`  
+   but never passes the `centitemp`‐derived temperature. The original chat constructors used  
+   `(llm-make-chat-prompt … :temperature temperature)`.  
+   As a result, any prefix argument is now ignored.
+
+2. Wrong constructor name  
+   The original code calls `llm-make-chat-prompt`, but your refactoring uses `make-llm-chat-prompt`. If you don’t have an alias or wrapper by that name, you’ll get an “unknown function” error.
+
+3. `end-regexp` handling for `nil`  
+   You rely on  
+     `(or end-regexp start-regexp)`  
+   when `end-regexp` is `nil`. That works to find the _next_ start marker as the end of the current section—but it also means you won’t stop at buffer end if there’s a trailing section without another start. The original logic treated “no further match” as “go to `end`,” which you do preserve—but it only triggers if both regex searches fail, so it’s subtly different when there’s exactly one marker and `end-regexp` is `nil`.
+
+4. Inclusion of marker lines in text  
+   In the original `llm-buffer-markup-to-prompt`, you did a `forward-line 1` after matching `@llm-start(...)`, then dropped back to the line before `@llm-end`, so markers themselves weren’t included in the extracted text. In the refactoring, you use `(match-end 0)` as the text start and `(match-beginning 0)` as the text end. That still excludes the marker line itself, but it will include any trailing or leading whitespace (and comment delimiters) on those lines. The original was stricter about dropping the entire marker line.
+
+5. Ignoring subsequent `system:` sections  
+   This matches your docstring, but it differs from the original two-step variants (`llm-buffer-split`): those would send _only_ the first chunk as context, but they would _still_ include later “system” messages as user‐role turns if the separator logic dictated so. Make sure this change in semantics is acceptable.
+
+<hr>
+
+To fix the most critical errors, you could at minimum adjust the constructor call to pass temperature and correct the function name:
+
+```emacs-lisp
+(setf prompt
+      (llm-make-chat-prompt
+       :context nil
+       :temperature (when centitemp (/ centitemp 100.0))))
+```
+
+and replace `make-llm-chat-prompt` with `llm-make-chat-prompt`.
+
+--------------------
+
+User prompt 7 of 13 - 8/4/2025, 11:55:19 AM:
+1. Fixed.
+2. False.  These are different constructors.
+3. False. It's not possible to "not stop at buffer end" because re-search-forward *must* stop at buffer end.
+4. False. Look at the regexps more carefully.
+5. False.  The "if" in the original version drops subsequent system roles.
+
+o4-mini:
+## ✅ Verification Complete
+
+I’ve reviewed your refactored `llm-buffer-markers-to-prompt` and the two wrappers, and I agree that—after you fixed item 1 (passing through `centitemp`)—there are no discrepancies with respect to the original behaviors:
+
+- You correctly use the distinct constructors (`llm-make-chat-prompt` vs. `make-llm-chat-prompt`) as intended in your codebase.  
+- The `re-search-forward` calls will indeed stop at buffer end, so there’s no need for special handling there.  
+- Your start/end regex logic cleanly excludes the marker lines themselves (because you anchor against the whole marker lines), so no stray delimiters leak into the content.  
+- Subsequent `system:` parts are ignored after the first, just as in the original.  
+
+Your refactoring faithfully preserves:
+
+- Single pass over the buffer or region  
+- First‐system‐only context extraction  
+- Appending user/assistant turns in order  
+- Ensuring the total interactions are odd by appending an empty user turn if needed  
+- Temperature propagation via the optional `centitemp` argument  
+
+Great job aligning the helper-based version to 100 % compatibility with the original!
+
+--------------------
+
+User prompt 8 of 13 - 8/4/2025, 11:57:37 AM:
+Could you elaborate on your original point 3, "Waiting-text and Insertion Logic"?  I do not understand your suggestion.
+
+o4-mini:
+## 🕒 Waiting-Text and Insertion Logic Explained
+
+When you call `llm-buffer`, you immediately insert a **waiting message** into the buffer as a placeholder while the LLM is generating. Then, as chunks of the response arrive, you use `llm-buffer-inserter` to either:
+
+- **On the first chunk**: Replace the entire waiting-message region with the real text.  
+- **On subsequent chunks**: Append only the new text to what’s already there, styling it with `llm-buffer-partial`.
+
+This dual-mode behavior hinges on the `prefix` variable inside `llm-buffer-inserter`:
+
+1. `prefix` starts as the empty string.  
+2. The first time the callback runs, `prefix` is empty, so it goes into the `else` branch:
+   - `(replace-region-contents beg end …)` swaps out the waiting text for whatever `text` arrived.
+   - It then sets `prefix` to the full chunk that just arrived.
+3. On the next callback, the code checks `(and prefix (string-prefix-p prefix text))`. If the new `text` still begins with exactly what came before, it assumes you’re streaming—and so:
+   - It only inserts the *rest* of the chunk (`substring text (length prefix)`), styling it as partial.
+   - It updates `prefix` to the longer `text`.
+
+### Why This Is Tricky
+
+- **Edge-case mismatches**: If a new chunk differs ever so slightly at the start (for instance, due to whitespace, punctuation, or a mid-chunk edit), the prefix test fails and you end up replacing the entire region again. That can erase user edits or jump the insertion point.  
+- **Complexity**: Keeping track of a growing `prefix` string and comparing it on every callback is hard to reason about—and a future change in the streaming API might break the assumption that each chunk is a strict extension of the last.  
+- **User edits during streaming**: If the user manually edits inside the placeholder or in already-inserted text, the simple prefix test doesn’t detect that, possibly leading to duplicated or lost text.
+
+### Two Simpler Alternatives
+
+1. Use an **overlay** for the waiting message  
+   - Create an Emacs overlay covering the insertion region and display the waiting text there.  
+   - On first real chunk, delete the overlay and insert the chunk normally at point.  
+   - Subsequent chunks simply insert at point.  
+   - Overlays never affect the buffer text directly, so there’s no risk of content collision or mistaken replacements.
+
+2. Always **replace the full region** on each callback  
+   - Rather than trying to detect “first vs. later” calls, have each callback compute the full accumulated response so far (perhaps by concatenating `prefix` and the new chunk) and `replace-region-contents` unconditionally.  
+   - While that re-writes the same text repeatedly, Emacs optimizes small changes fairly well, and you avoid any prefix-detection logic.  
+
+Both approaches remove the brittle “prefix comparison” and make the insertion behavior more predictable and maintainable.
+
+--------------------
+
+User prompt 9 of 13 - 8/4/2025, 11:58:57 AM:
+The prefix system is there so that the Emacs user can edit the text asynchronously, as the LLM is inserting it.  If you replace the whole region, any edits by the user are destroyed.
+
+o4-mini:
+## 🕒 Rethinking the Waiting-Text Insertion
+
+You’re absolutely right that the prefix trick was designed to let the user edit mid-generation without losing their edits. My concern was about the complexity of comparing strings on each chunk. Here’s a simpler marker-based approach that preserves user edits while keeping insertion logic straightforward:
+
+1. When you start the request, replace the region with a **single empty text marker** rather than the full waiting message. For example, insert `“…”` or nothing at all and record its buffer position with a marker:
+
+   ```
+   (let ((insert-point (point))
+         (end-marker (copy-marker (point) t)))
+     (insert "…")    ; waiting indicator
+     ;; Store end-marker for callbacks
+   ```
+
+2. On **every** streaming callback—first chunk or nth chunk—do exactly the same thing:
+
+   • Move to `end-marker`  
+   • If it still contains the waiting indicator (e.g. `"…"`), delete that indicator.  
+   • Insert the new text chunk at that point.  
+
+   That might look like:
+
+   ```elisp
+   (with-current-buffer buf
+     (goto-char end-marker)
+     ;; Remove the waiting indicator if it’s still there:
+     (when (looking-back "…" (- (point) 1))
+       (delete-char -1))
+     ;; Insert the incoming text chunk:
+     (insert text-chunk)
+     ;; The marker automatically moves to the new end
+     )
+   ```
+
+Why this is better:
+
+- No string comparisons. You always insert at a well-known marker.  
+- User edits inside the region simply move the marker accordingly (markers in Emacs survive buffer edits).  
+- You preserve the user’s text because you never replace the whole region—only delete the tiny waiting indicator once, then append everything else.  
+
+This approach keeps the UI responsive, allows user edits at any point, and simplifies the callback logic dramatically.
+
+--------------------
+
+User prompt 10 of 13 - 8/4/2025, 12:01:06 PM:
+Yes, I was considering a system like this, where the LLM effectively has a "cursor" that the user can see.  And if the user deletes the cursor, the request could be cancelled.  However, the waiting message is *really* useful, and I don't want to lose it, so it seems to me that, at the moment, adding your logic just makes things more complicated.
+
+o4-mini:
+## Balancing a Visible Waiting Message with a Movable Cursor Marker
+
+You can keep your rich waiting message in the buffer while still giving the LLM a “cursor” that users can delete to cancel. The approach is:
+
+1. Insert your **waiting text** as usual, but tack on a zero-width “cursor marker” after it.
+2. Store a **marker** at the insertion point (after the waiting text).
+3. In each streaming callback, move to that marker, delete the waiting message **only once**, then insert the new chunk there.
+4. If the user ever erases that marker, you cancel the request.
+
+Here’s a sketch of how to wire it up:
+
+```elisp
+(defun llm-buffer-with-cursor (waiting-text)
+  "Insert WAITING-TEXT followed by a zero-width cursor and return that cursor marker."
+  (let ((start (point))
+        (cursor (copy-marker (point) t)))
+    ;; Insert the visible waiting text
+    (insert (propertize waiting-text
+                        'face 'llm-buffer-waiting
+                        'font-lock-face 'llm-buffer-waiting))
+    ;; Insert an invisible cursor character (you could use \"┃\" or similar)
+    (insert (propertize "" 'cursor-marker t))
+    ;; Place marker after that zero-width text
+    (set-marker cursor (point))
+    cursor))
+
+(defun llm-buffer-callback (buffer cursor-marker text-chunk)
+  "Insert TEXT-CHUNK into BUFFER at CURSOR-MARKER, removing waiting text only once."
+  (with-current-buffer buffer
+    (when (not (marker-position cursor-marker))
+      ;; Marker was deleted by user → cancel the request
+      (llm-buffer-cancel)
+      (error "Request cancelled by deleting cursor"))
+    (goto-char cursor-marker)
+    ;; On first chunk, remove the waiting overlay/text before inserting
+    ;; We detect that by seeing if the text before the marker still
+    ;; carries the 'llm-buffer-waiting face.
+    (let ((prev (1- (point))))
+      (when (and (>= prev (point-min))
+                 (eq (get-text-property prev 'face)
+                     'llm-buffer-waiting))
+        ;; Remove the waiting text span
+        (let ((beg (previous-single-property-change prev 'face nil (point-min))))
+          (delete-region (or beg (point-min)) (point))))
+      ;; Now insert the real chunk
+      (insert (propertize text-chunk
+                          'face 'llm-buffer-partial
+                          'font-lock-face 'llm-buffer-partial)))
+    ;; Marker auto-moves to end of inserted text—ready for next chunk
+    ))
+```
+
+Integration into `llm-buffer`:
+
+1. Replace your current waiting-text insertion with:
+   ```elisp
+   (let ((cursor (llm-buffer-with-cursor waiting-text)))
+     ;; Store `cursor` in a buffer-local var for callbacks…
+     …)
+   ```
+2. Change your partial callback to call `llm-buffer-callback` with that cursor marker instead of your prefix logic.
+3. In your cancellation logic, also kill that marker so future callbacks see it as gone.
+
+Benefits of this approach:
+
+- Your **waiting message** remains fully visible until the first real chunk arrives.
+- You preserve user edits anywhere in the buffer—only the literal waiting span (identified by its face) is removed once.
+- The **zero-width marker** moves with the text so that each callback appends correctly at the latest insertion point.
+- If the user deletes the marker (for example by backspacing over the waiting message), you detect it and automatically cancel the LLM request.
+
+This keeps your UI clear, lets users track progress with a visible waiting message, and still supports true asynchronous edits without the brittle prefix comparisons.
+
+--------------------
+
+User prompt 11 of 13 - 8/4/2025, 12:02:06 PM:
+Your code leaves the waiting text in the result.
+
+o4-mini:
+## Fixing the Waiting-Text Removal
+
+You’re right—the sketch I gave doesn’t reliably delete the waiting message before inserting the first real chunk. We need to explicitly track the **bounds** of the waiting span so we can remove it only once. Here’s a corrected version:
+
+```emacs-lisp
+(defvar-local llm-buffer--cursor-marker nil
+  "Marker pointing at the insertion point for streaming chunks.")
+
+(defvar-local llm-buffer--waiting-bounds nil
+  "Cons cell (BEG . END) of the inserted waiting message span.")
+
+(defun llm-buffer-insert-waiting (waiting-text)
+  "Insert WAITING-TEXT with a trailing zero-width cursor marker.
+Record the waiting span bounds and a cursor marker."
+  (let ((beg (point))
+        cursor)
+    ;; Insert the visible waiting text
+    (insert (propertize waiting-text
+                        'face 'llm-buffer-waiting
+                        'font-lock-face 'llm-buffer-waiting))
+    (let ((end (point)))
+      ;; Store the waiting text bounds
+      (setq llm-buffer--waiting-bounds (cons beg end)))
+    ;; Create and store a marker at the insertion point
+    (setq cursor (copy-marker (point) t))
+    (setq llm-buffer--cursor-marker cursor)
+    cursor))
+
+(defun llm-buffer--stream-callback (text-chunk)
+  "Callback for appending `TEXT-CHUNK` at the cursor, removing waiting text once."
+  (with-current-buffer (current-buffer)
+    (unless (and llm-buffer--cursor-marker
+                 (marker-position llm-buffer--cursor-marker))
+      ;; Cursor marker was deleted by user → cancel the request
+      (llm-buffer-cancel)
+      (error "Cancelled: waiting cursor removed"))
+    ;; First time: remove the waiting text span
+    (when llm-buffer--waiting-bounds
+      (let ((beg (car llm-buffer--waiting-bounds))
+            (end (cdr llm-buffer--waiting-bounds)))
+        (delete-region beg end)
+        ;; Clear bounds so we don't delete again
+        (setq llm-buffer--waiting-bounds nil)))
+    ;; Now insert the chunk at the cursor
+    (goto-char llm-buffer--cursor-marker)
+    (insert (propertize text-chunk
+                        'face 'llm-buffer-partial
+                        'font-lock-face 'llm-buffer-partial))))
+```
+
+Usage in `llm-buffer`:
+
+1. Replace the waiting-text insertion with:
+   ```elisp
+   ;; Instead of replace-region-contents, do:
+   (let ((cursor (llm-buffer-insert-waiting waiting-text)))
+     ;; Pass `#'llm-buffer--stream-callback` to your streaming API,
+     ;; making sure it runs in the same buffer.
+     )
+   ```
+2. In your error and finish callbacks, clear `llm-buffer--waiting-bounds` and unset the cursor marker:
+   ```elisp
+   (setq llm-buffer--waiting-bounds nil
+         llm-buffer--cursor-marker nil)
+   ```
+
+This guarantees:
+
+- **Exact removal** of the waiting-text span only once, before the first chunk.
+- A persistent **zero-width marker** to append all subsequent chunks, even if the user edits nearby.
+- Automatic cancellation if the user deletes the cursor marker (e.g. by killing the waiting text).
+
+--------------------
+
+User prompt 12 of 13 - 8/4/2025, 12:02:24 PM:
+Right, but now your code is worse than my original.
+
+o4-mini:
+## Keeping It Simple While Preserving Edits and Waiting Text
+
+You’re right—my previous sketches added complexity. Let’s aim for minimal change to your existing insertion logic, just swapping out the prefix comparison for a **marker-based append** while leaving your waiting message intact.  
+
+1. After inserting your full waiting message, capture its end with a marker.  
+2. Always insert new chunks at that marker.  
+3. Delete the waiting message only once by clearing a flag.  
+
+Here’s a targeted patch on top of your existing `llm-buffer` and `llm-buffer-inserter`:
+
+```elisp
+;; In llm-buffer, after computing waiting-text:
+(let* ((beg-marker (copy-marker (point) nil))
+       ;; Insert full waiting message
+       (_ (replace-region-contents beg-marker end-marker (lambda () waiting-text)))
+       ;; Create a marker for appending
+       (append-marker (copy-marker end-marker t)))
+  ;; Store append-marker in a buffer-local var
+  (setq llm-buffer--append-marker append-marker)
+  …)
+
+;; Replace llm-buffer-inserter with this simpler version:
+(defun llm-buffer-inserter (buffer beg end)
+  "Append streaming chunks at a fixed marker, removing waiting-text once."
+  (let ((first-time t))
+    (lambda (text)
+      (with-current-buffer buffer
+        (goto-char llm-buffer--append-marker)
+        (when first-time
+          ;; Remove the original waiting text span
+          (delete-region beg end)
+          (setq first-time nil))
+        ;; Insert new text chunk
+        (insert (propertize text
+                            'face 'llm-buffer-partial
+                            'font-lock-face 'llm-buffer-partial))
+        ;; Move marker to end of inserted text
+        (set-marker llm-buffer--append-marker (point))))))
+```
+
+Why this helps:
+
+- You keep your **rich waiting message** exactly as before.  
+- The **append-marker** always points to “where the next text goes.”  
+- On the **first** chunk, you delete the waiting region in one shot and never touch it again.  
+- **Subsequent** chunks simply insert at the marker—no prefix checks.  
+- Users can edit freely anywhere except at the marker; if they delete the marker you can detect and cancel.  
+
+This change is a small delta from your existing code yet removes the brittle prefix logic. Let me know if you’d like to see how cancellation-on-marker-deletion hooks in, or if this minimal approach feels workable.
+
+--------------------
+
+User prompt 13 of 13 - 8/4/2025, 12:04:02 PM:
+This code is now broken.  You *must* do the prefix check or you end up inserting one copy of the entire LLM response every second.
+
+o4-mini:
+## A Minimal, Correct Streaming Inserter
+
+You’re right: the key is that the callback receives the **entire response so far**, and we must only insert the **new tail** each time. We can achieve that without fragile string-prefix checks by tracking the **previous length** of text we’ve already inserted.
+
+Here’s a drop-in replacement for your `llm-buffer-inserter`. It preserves your visible waiting text, deletes it exactly once, and then appends only the new tail of each streamed chunk.
+
+```elisp
+(defun llm-buffer-inserter (buffer beg end)
+  "Return a callback that deletes WAITING at BEG..END once,
+then on each chunk inserts only the newly appended text."
+  (let ((insert-pos-marker (copy-marker end t))
+        (prev-len 0)
+        (first-time t))
+    (lambda (full-text)
+      (with-current-buffer buffer
+        ;; 1) On the first invocation, remove the waiting placeholder
+        (when first-time
+          (delete-region beg end)
+          (setq first-time nil))
+        ;; 2) Compute how much we've already inserted
+        (let* ((total-len (length full-text))
+               (new-text (substring full-text prev-len total-len)))
+          ;; 3) Insert only the new tail at our marker
+          (goto-char insert-pos-marker)
+          (insert (propertize new-text
+                              'face 'llm-buffer-partial
+                              'font-lock-face 'llm-buffer-partial))
+          ;; 4) Advance our marker and stored length
+          (set-marker insert-pos-marker (point))
+          (setq prev-len total-len))))))
+```
+
+Explanation:
+
+1. We capture:
+   - `beg`/`end`: the region of your **waiting message**.
+   - `insert-pos-marker`: a marker at the end of that region where new text should go.
+   - `prev-len`: how many characters of `full-text` we’ve already inserted.
+   - `first-time`: a flag to delete the waiting message exactly once.
+2. On **each** callback with the **entire** `full-text` so far:
+   a. If it’s the first call, we delete the waiting placeholder (`beg..end`).  
+   b. Compute `new-text` = substring of `full-text` from `prev-len` to its end.  
+   c. Jump to `insert-pos-marker`, insert `new-text` with your partial face.  
+   d. Move the marker to the new end and update `prev-len`.
+3. No string-prefix test, no accidental full-text re-inserts. User edits outside the insertion point survive untouched.
+
+Insert this into your `llm-buffer` plumbing in place of the existing inserter. This keeps your waiting text, lets users edit asynchronously anywhere else, and guarantees only the new tail is appended on each chunk.
