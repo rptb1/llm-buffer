@@ -71,7 +71,8 @@ arriving, such as \"assistant: \"."
   :local t)
 
 (defcustom llm-buffer-postfix ""
-  "A string to append after the LLM output when it is complete."
+  "A string to append after the LLM output when it is complete,
+such as \"\\\\n---\\\\n\"."
   :type 'string
   :local t)
 
