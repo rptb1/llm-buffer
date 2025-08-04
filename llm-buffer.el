@@ -63,6 +63,18 @@ argument to llm-buffer."
   :type 'float
   :local t)
 
+;; TODO: Could be more flexible to allow post-processing.
+(defcustom llm-buffer-prefix ""
+  "A string to insert before the LLM output when it starts
+arriving, such as \"assistant: \"."
+  :type 'string
+  :local t)
+
+(defcustom llm-buffer-postfix ""
+  "A string to append after the LLM output when it is complete."
+  :type 'string
+  :local t)
+
 (defvar-local llm-buffer-canceller nil
   "When non-nil, there is an LLM request running in the buffer,
 and this function can be called to cancel it.")
@@ -290,7 +302,10 @@ edited by the user while the LLM is still generating."
               (goto-char end)
               (setq beg (point))
               (insert (substring text (length prefix))))
-          (replace-region-contents beg end (lambda () text)))
+          (replace-region-contents
+           beg end
+           (lambda ()
+             (concat llm-buffer-prefix text))))
         (add-text-properties beg end llm-buffer-partial-props)
         (setq prefix text)))))
 
@@ -336,10 +351,9 @@ temperature of 0.75."
          ;; When the final result arrives, put it in the buffer and cancel the mode.
          (response-callback
           (lambda (text)
-            (funcall partial-callback text)
+            (funcall partial-callback (concat text llm-buffer-postfix))
             (funcall finish-text)
             (with-current-buffer request-buffer
-              ;; TODO: Insert separator.
               (llm-request-mode 0)
               (setq llm-buffer-canceller nil))))
          (error-callback
