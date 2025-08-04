@@ -56,6 +56,13 @@ be sent to the LLM."
   ;; Can be overriden in e.g. file local variables.
   :local t)
 
+(defcustom llm-buffer-temperature nil
+  "If non-nil, override the default temperature for the model.
+Can be set per-buffer.  This will be overridden by a prefix
+argument to llm-buffer."
+  :type 'float
+  :local t)
+
 (defvar-local llm-buffer-canceller nil
   "When non-nil, there is an LLM request running in the buffer,
 and this function can be called to cancel it.")
@@ -114,7 +121,8 @@ prompt."
              (buffer-substring-no-properties (point-min) (point-max)))))
          ;; Try to split the text into parts with the separator
          (parts (split-string text llm-buffer-separator nil "\\s-*"))
-         (temperature (when centitemp (/ centitemp 100.0)))
+         (temperature (or (when centitemp (/ centitemp 100.0))
+                          llm-buffer-temperature))
          ;; Possible system prompt buffer
          (sys (get-buffer "system-prompt")))
     ;; Form a prompt
@@ -159,8 +167,10 @@ of the part.  The first \"system\" part is used as the context
 field in the prompt, and subsequent system parts are ignored."
   (let* ((start (if (use-region-p) (region-beginning) (point-min)))
          (end (if (use-region-p) (region-end) (point-max)))
+         (temperature (or (when centitemp (/ centitemp 100.0))
+                          llm-buffer-temperature))
          (prompt (make-llm-chat-prompt
-                  :temperature (when centitemp (/ centitemp 100.0)))))
+                  :temperature temperature)))
     (save-excursion
       (goto-char start)
       (while (re-search-forward start-regexp end t)
