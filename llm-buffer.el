@@ -250,9 +250,17 @@ placeholder while waiting the LLM to respond."
            (llm-count-tokens llm-buffer-provider
                              (or (llm-chat-prompt-context prompt) ""))))
          (last (llm-chat-prompt-interaction-content (car (last interactions))))
-         (empty-last (string= last "")))
+         (empty-last (string= last ""))
+         ;; TODO: Investigate how to reliably work out which model
+         ;; we're talking to by testing with a multi-model server.
+         (model-name (or (and (not (string= (llm-name llm-buffer-provider) "unset"))
+                              (llm-name llm-buffer-provider))
+                         (and (member 'model-list (llm-capabilities llm-buffer-provider))
+                              (= (length (llm-models llm-buffer-provider)) 1)
+                              (car (llm-models llm-buffer-provider)))
+                         "LLM")))
     ;; TODO: Could include provider or model name rather than just "LLM".
-    (format "[Sending approx %d tokens from %s%s parts%s.  Waiting for LLM...]"
+    (format "[Sending approx %d tokens from %s%s parts%s.  Waiting for %s...]"
             token-count
             (if (llm-chat-prompt-context prompt)
                 "system prompt and "
@@ -262,7 +270,8 @@ placeholder while waiting the LLM to respond."
               part-count)
             (if temperature
                 (format " at temperature %g" temperature)
-              ""))))
+              "")
+            model-name)))
 
 (defun llm-buffer-inserter (buffer beg end)
   "Make an insertion callback for llm-chat-streaming that appends
