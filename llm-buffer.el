@@ -407,21 +407,14 @@ temperature of 0.75."
               (funcall remove-waiting)
               (funcall finish-text))))
       (setq llm-buffer-canceller canceller)
-      ;; Cancel the LLM request if the output text is killed.  This also
-      ;; catches the case where the whole buffer is killed.
-      (letrec ((timer (run-at-time
-                       t 5
-                       (lambda ()
-                         (with-current-buffer request-buffer
-                           ;; Is the request still running?
-                           (if (eq llm-buffer-canceller canceller)
-                               ;; Is the output region still there?
-                               (when (equal beg-marker end-marker)
-                                 (llm-buffer-cancel))
-                             ;; Request isn't running, so kill timer.
-                             (cancel-timer timer)))))))
-        (add-hook 'kill-buffer-hook
-                  (lambda () (when (timerp timer) (cancel-timer timer))))))))
+      ;; Cancel the LLM request if the output is killed.
+      (letrec
+          ((hook
+            (lambda (beg end len)
+              (when (= beg-marker end-marker)
+                (llm-request-mode 0)
+                (remove-hook 'after-change-functions hook t)))))
+        (add-hook 'after-change-functions hook nil t)))))
 
 (provide 'llm-buffer)
 
