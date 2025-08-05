@@ -109,6 +109,50 @@ and this function can be called to cancel it.")
     (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)
     (llm-buffer-cancel)))
 
+(defun llm-buffer-alist-to-prompt (parts &optional centitemp)
+  "Form an LLM prompt from an alist of roles and text.
+
+e.g. ((system . \"Your name is Bob\")
+      (user . \"What is your name?\")
+      (assistant . \"My name is Bob.\")
+      (user . \"Do you have a surname?\"))
+
+The roles may be nil, in which case roles are guessed as follows:
+
+- If there is only one element a simple user prompt is formed.
+
+- Otherwise, the first element is used as the system prompt, with
+  user and assistant prompts following.
+
+In any case, an empty user prompt is appended if necessary."
+  (let* ((temperature (or (when centitemp (/ centitemp 100.0))
+                          llm-buffer-temperature))
+         (prompt (make-llm-chat-prompt :temperature temperature)))
+    ;; Process the parts into a prompt
+    ;; Just one part without a role?  A simple user prompt.
+    (if (and (= (length parts) 1) (not (caar parts)))
+        (llm-chat-prompt-append-response prompt (cdar parts))
+      (let ((last-role nil))
+        (while parts
+          (let ((role (or (caar parts)
+                          (pcase last-role
+                            ;; No role on first part?  Make it the system prompt.
+                            ('nil 'system)
+                            ('user 'assistant)
+                            (_ 'user))))
+                (text (cdar parts)))
+            (if (eq role 'system)
+                ;; TODO: Append to system prompt rather than ignoring?
+                (setf (llm-chat-prompt-context prompt)
+                      (or (llm-chat-prompt-context prompt) text))
+              (llm-chat-prompt-append-response prompt text role))
+            (setq last-role role)
+            (setq parts (cdr parts))))))
+    ;; Append empty user part if there aren't enough.
+    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
+      (llm-chat-prompt-append-response prompt ""))
+    prompt))
+
 ;; TODO: This is where things should be clever, e.g. breaking an RST
 ;; document into sections, looing for temperature hints, etc.  Perhaps
 ;; dispatch by mode.
@@ -121,53 +165,20 @@ The first part is sent as a system prompt.  The rest are sent as
 a chat conversation, between the user and the LLM as assistant.
 If necessary, an empty user prompt is appended.
 
-If there are no separators, the whole buffer is sent.  And if a
-buffer named system-prompt exists, it is sent as a system
-prompt."
-  (let* (;; The input text
-         (text
-           (if (use-region-p)
-               (buffer-substring-no-properties (region-beginning) (region-end))
-             (buffer-substring-no-properties (point-min) (point-max))))
-         ;; Try to split the text into parts with the separator
-         (parts (split-string text llm-buffer-separator nil "\\s-*"))
-         ;; Strip comments
-         ;; TODO: Replace with space?
+If there are no separators, the whole buffer is sent."
+  (let* ((text
+          (if (use-region-p)
+              (buffer-substring-no-properties (region-beginning) (region-end))
+            (buffer-substring-no-properties (point-min) (point-max))))
+         ;; Split the text into parts with the separator
          (parts
           (mapcar
            (lambda (string)
-             (replace-regexp-in-string llm-buffer-comment "" string))
-           parts))
-         (temperature (or (when centitemp (/ centitemp 100.0))
-                          llm-buffer-temperature))
-         ;; Possible system prompt buffer
-         (sys (get-buffer "system-prompt")))
-    ;; Form a prompt
-    (cond
-     ;; Check if the text contains the split regexp
-     ((> (length parts) 1)
-
-      (let* ((system (car parts))
-             (parts (cdr parts))
-             ;; Parts must have odd length, so append or remove empty
-             ;; last part as necessary.
-             (parts
-              (cond
-               ((= (mod (length parts) 2) 1) parts)
-               ((string= (car (last parts)) "") (butlast parts))
-               (t (append parts '(""))))))
-        (llm-make-chat-prompt parts
-                              :context system :temperature temperature)))
-
-     ;; Use the content of the "system-prompt" buffer if it exists
-     (sys
-      (llm-make-chat-prompt text
-                            :context (with-current-buffer sys (buffer-string))
-                            :temperature temperature))
-
-     ;; Otherwise send the whole text
-     (t
-      (llm-make-chat-prompt text :temperature temperature)))))
+             (cons nil
+                   ;; TODO: Replace with space?
+                   (replace-regexp-in-string llm-buffer-comment "" string)))
+           (split-string text llm-buffer-separator nil "\\s-*"))))
+    (llm-buffer-alist-to-prompt parts centitemp)))
 
 (defvar-local llm-buffer-to-prompt #'llm-buffer-split
   "Form an llm-chat-prompt from the region or buffer.
@@ -177,21 +188,25 @@ use different kinds of markup.")
 
 (defun llm-buffer-markers-to-prompt (start-regexp &optional end-regexp centitemp)
   "Form an LLM prompt from the region or buffer by looking for
-text between start-regexp and end-regexp (or another start-regexp
-if not supplied).  The start-regexp should return a match 1 of
-either \"system\", \"user\" or \"assistant\" to indicate the role
-of the part.  The first \"system\" part is used as the context
+parts between start-regexp and end-regexp (or another start-regexp
+if not supplied).
+
+The start-regexp may return a match 1 of either \"system\",
+\"user\" or \"assistant\" to indicate the role of the part.  But
+if it does not, and there is more than one part, the first part
+is used as the system prompt, followed by alternating user then
+assistant parts.
+
+Only the first \"system\" part is used as the context
 field in the prompt, and subsequent system parts are ignored."
   (let* ((start (if (use-region-p) (region-beginning) (point-min)))
          (end (if (use-region-p) (region-end) (point-max)))
-         (temperature (or (when centitemp (/ centitemp 100.0))
-                          llm-buffer-temperature))
-         (prompt (make-llm-chat-prompt
-                  :temperature temperature)))
+         (parts nil))
+    ;; Find the parts
     (save-excursion
       (goto-char start)
       (while (re-search-forward start-regexp end t)
-        (let ((role (intern (match-string 1)))
+        (let ((role (when (match-string 1) (intern (match-string 1))))
               (text-start (match-end 0)))
           (if (re-search-forward (or end-regexp start-regexp) end t)
               (goto-char (match-beginning 0))
@@ -201,13 +216,9 @@ field in the prompt, and subsequent system parts are ignored."
                   (replace-regexp-in-string
                    llm-buffer-comment "" ; TODO: replace with space?
                    (buffer-substring-no-properties text-start (point))))))
-            (if (eq role 'system)
-                (setf (llm-chat-prompt-context prompt)
-                      (or (llm-chat-prompt-context prompt) text))
-              (llm-chat-prompt-append-response prompt text role))))))
-    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
-      (llm-chat-prompt-append-response prompt ""))
-    prompt))
+            (setq parts (cons (cons role text) parts))))))
+    (setq parts (nreverse parts))
+    (llm-buffer-alist-to-prompt parts)))
 
 (defun llm-buffer-chat-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
