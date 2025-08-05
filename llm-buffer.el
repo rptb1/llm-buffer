@@ -126,14 +126,18 @@ buffer named system-prompt exists, it is sent as a system
 prompt."
   (let* (;; The input text
          (text
-          ;; TODO: Consider comment replacement *after* splitting?
-          (replace-regexp-in-string
-           llm-buffer-comment ""
            (if (use-region-p)
                (buffer-substring-no-properties (region-beginning) (region-end))
-             (buffer-substring-no-properties (point-min) (point-max)))))
+             (buffer-substring-no-properties (point-min) (point-max))))
          ;; Try to split the text into parts with the separator
          (parts (split-string text llm-buffer-separator nil "\\s-*"))
+         ;; Strip comments
+         ;; TODO: Replace with space?
+         (parts
+          (mapcar
+           (lambda (string)
+             (replace-regexp-in-string llm-buffer-comment "" string))
+           parts))
          (temperature (or (when centitemp (/ centitemp 100.0))
                           llm-buffer-temperature))
          ;; Possible system prompt buffer
