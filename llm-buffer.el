@@ -192,7 +192,11 @@ field in the prompt, and subsequent system parts are ignored."
           (if (re-search-forward (or end-regexp start-regexp) end t)
               (goto-char (match-beginning 0))
             (goto-char end))
-          (let ((text (string-trim (buffer-substring-no-properties text-start (point)))))
+          (let ((text
+                 (string-trim
+                  (replace-regexp-in-string
+                   llm-buffer-comment "" ; TODO: replace with space?
+                   (buffer-substring-no-properties text-start (point))))))
             (if (eq role 'system)
                 (setf (llm-chat-prompt-context prompt)
                       (or (llm-chat-prompt-context prompt) text))
