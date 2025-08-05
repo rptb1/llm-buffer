@@ -178,7 +178,13 @@ If there are no separators, the whole buffer is sent."
                    (string-trim
                     ;; TODO: Replace with space?
                     (replace-regexp-in-string llm-buffer-comment "" string))))
-           (split-string text llm-buffer-separator))))
+           (split-string text llm-buffer-separator)))
+         ;; Remove a blank last part, so that a terminating separator
+         ;; is ignored.
+         (parts
+          (if (string= (cdar (last parts)) "")
+              (butlast parts)
+            parts)))
     (llm-buffer-alist-to-prompt parts centitemp)))
 
 (defvar-local llm-buffer-to-prompt #'llm-buffer-split
