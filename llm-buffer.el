@@ -175,9 +175,10 @@ If there are no separators, the whole buffer is sent."
           (mapcar
            (lambda (string)
              (cons nil
-                   ;; TODO: Replace with space?
-                   (replace-regexp-in-string llm-buffer-comment "" string)))
-           (split-string text llm-buffer-separator nil "\\s-*"))))
+                   (string-trim
+                    ;; TODO: Replace with space?
+                    (replace-regexp-in-string llm-buffer-comment "" string))))
+           (split-string text llm-buffer-separator))))
     (llm-buffer-alist-to-prompt parts centitemp)))
 
 (defvar-local llm-buffer-to-prompt #'llm-buffer-split
