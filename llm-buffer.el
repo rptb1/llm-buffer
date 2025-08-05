@@ -28,6 +28,10 @@
   "Face used for partially inserted LLM response."
   :group 'llm-buffer-faces)
 
+(defface llm-buffer-error '((t :inherit error))
+  "Face used for error messages from the LLM."
+  :group 'llm-buffer-faces)
+
 (defconst llm-buffer-partial-props
   '(face llm-buffer-partial
     font-lock-face llm-buffer-partial))
@@ -148,9 +152,6 @@ In any case, an empty user prompt is appended if necessary."
               (llm-chat-prompt-append-response prompt text role))
             (setq last-role role)
             (setq parts (cdr parts))))))
-    ;; Append empty user part if there aren't enough.
-    (when (= (mod (length (llm-chat-prompt-interactions prompt)) 2) 0)
-      (llm-chat-prompt-append-response prompt ""))
     prompt))
 
 ;; TODO: This is where things should be clever, e.g. breaking an RST
@@ -178,13 +179,7 @@ If there are no separators, the whole buffer is sent."
                    (string-trim
                     ;; TODO: Replace with space?
                     (replace-regexp-in-string llm-buffer-comment "" string))))
-           (split-string text llm-buffer-separator)))
-         ;; Remove a blank last part, so that a terminating separator
-         ;; is ignored.
-         (parts
-          (if (string= (cdar (last parts)) "")
-              (butlast parts)
-            parts)))
+           (split-string text llm-buffer-separator))))
     (llm-buffer-alist-to-prompt parts centitemp)))
 
 (defvar-local llm-buffer-to-prompt #'llm-buffer-split
@@ -195,8 +190,10 @@ use different kinds of markup.")
 
 (defun llm-buffer-markers-to-prompt (start-regexp &optional end-regexp centitemp)
   "Form an LLM prompt from the region or buffer by looking for
-parts between start-regexp and end-regexp (or another start-regexp
-if not supplied).
+parts between start-regexp and end-regexp.
+
+If the end-regexp is nil, parts continue until the next
+start-regexp, or the end of the text.
 
 The start-regexp may return a match 1 of either \"system\",
 \"user\" or \"assistant\" to indicate the role of the part.  But
@@ -226,6 +223,14 @@ field in the prompt, and subsequent system parts are ignored."
             (setq parts (cons (cons role text) parts))))))
     (setq parts (nreverse parts))
     (llm-buffer-alist-to-prompt parts)))
+
+(defun llm-buffer-comment-chat-to-prompt (&optional centitemp)
+  (llm-buffer-markers-to-prompt
+   (concat "^"
+           (regexp-quote comment-start)
+           ".*\\<\\(system\\|user\\|assistant\\):.*$")
+   nil
+   centitemp))
 
 (defun llm-buffer-chat-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
@@ -385,10 +390,14 @@ temperature of 0.75."
               (setq llm-buffer-canceller nil))))
          (error-callback
           (lambda (_ msg)
-            (with-current-buffer request-buffer (llm-request-mode 0))
             (funcall remove-waiting)
             (funcall finish-text)
-            ;; TODO: Maybe the error message should be inserted?
+            (with-current-buffer request-buffer
+              (llm-request-mode 0)
+              (insert
+               (propertize (concat "[" msg "]")
+                           'face 'llm-buffer-error
+                           'font-lock-face 'llm-buffer-error)))
             (error msg))))
 
     ;; Insert the waiting text
