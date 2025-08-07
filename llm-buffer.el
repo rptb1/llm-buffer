@@ -325,7 +325,6 @@ placeholder while waiting the LLM to respond."
            (llm-count-tokens llm-buffer-provider
                              (or (llm-chat-prompt-context prompt) ""))))
          (last (llm-chat-prompt-interaction-content (car (last interactions))))
-         (empty-last (string= last ""))
          ;; TODO: Investigate how to reliably work out which model
          ;; we're talking to by testing with a multi-model server.
          (model-name (or (and (not (string= (llm-name llm-buffer-provider) "unset"))
@@ -335,14 +334,12 @@ placeholder while waiting the LLM to respond."
                               (car (llm-models llm-buffer-provider)))
                          "LLM")))
     ;; TODO: Could include provider or model name rather than just "LLM".
-    (format "[Sending approx %d tokens from %s%s parts%s.  Waiting for %s...]"
+    (format "[Sending approx %d tokens from %d parts%s.  Waiting for %s...]"
             token-count
             (if (llm-chat-prompt-context prompt)
                 "system prompt and "
               "")
-            (if empty-last
-                (format "%d+1" (- part-count 1))
-              part-count)
+            part-count
             (if temperature
                 (format " at temperature %g" temperature)
               "")
@@ -386,17 +383,16 @@ temperature of 0.75."
   (interactive "P")
   (llm-buffer-cancel)
   (let* ((prompt (funcall llm-buffer-to-prompt centitemp))
-
          ;; Use an overlay to remember where to insert the results and
          ;; to highlight them to the user.
          (overlay (make-overlay (point) (point) nil nil t))
-
          ;; Create a waiting message to be inserted while waiting for
          ;; a response from the LLM.
          (waiting-text (llm-buffer-waiting-text prompt))
+         ;; A function to remove the waiting text if it's the only
+         ;; thing in the output region, e.g. if the request is
+         ;; cancelled before the LLM replies.
          (remove-waiting
-          ;; Remove the placeholder if the request was cancelled
-          ;; before any text arrived.
           (lambda ()
             (with-current-buffer (overlay-buffer overlay)
               (let* ((start (overlay-start overlay))
@@ -404,12 +400,11 @@ temperature of 0.75."
                      (text (buffer-substring-no-properties start end)))
                 (when (string= text waiting-text)
                   (delete-region start end))))))
-
-         ;; Set up callbacks to receive results from the LLM via
+         ;; Make a callback to receive results from the LLM via
          ;; llm-chat-streaming.
-         ;; TODO: Could just take an overlay
          (partial-callback (llm-buffer-inserter overlay))
-         ;; When the final result arrives, put it in the buffer and cancel the mode.
+         ;; When the final result arrives, put it in the output region
+         ;; and tidy up.
          (response-callback
           (lambda (text)
             (funcall partial-callback (concat text llm-buffer-postfix))
@@ -417,13 +412,13 @@ temperature of 0.75."
               (llm-request-mode 0)
               (delete-overlay overlay)
               (setq llm-buffer-overlay nil))))
+         ;; If an error occurs, put the message in the output region
+         ;; and tidy up.
          (error-callback
           (lambda (_ msg)
             (funcall remove-waiting)
             (with-current-buffer (overlay-buffer overlay)
               (llm-request-mode 0)
-              ;; Insert error message into buffer.
-              ;; TODO: This inserts a bogus error on cancel.
               (save-excursion
                 (goto-char (overlay-end overlay))
                 (insert (concat "[" msg "]"))
@@ -431,6 +426,7 @@ temperature of 0.75."
                 ;; Ensure the overlay is deleted when the user deletes
                 ;; the error message.
                 (overlay-put overlay 'evaporate t)))
+            ;; Also signal the error clearly to Emacs.
             (error msg))))
 
     ;; Insert the waiting text
@@ -438,23 +434,28 @@ temperature of 0.75."
                              (overlay-end overlay)
                              (lambda () waiting-text))
     (overlay-put overlay 'face 'llm-buffer-waiting)
+    (overlay-put overlay 'remove-waiting remove-waiting)
 
-    ;; Send the request to the LLM, setting up a cancel operation.
-    (llm-request-mode 1)
-    (let* ((request 
-            (llm-chat-streaming llm-buffer-provider prompt
-                                partial-callback
-                                response-callback
-                                error-callback))
-           ;; Cancel the LLM request if the user kills the output.
-           (hook
-            (lambda (overlay after start end &optional length)
-              (when (= (overlay-start overlay) (overlay-end overlay))
-                (llm-buffer-cancel)))))
-      (overlay-put overlay 'request request)
-      (overlay-put overlay 'remove-waiting remove-waiting)
-      (overlay-put overlay 'modification-hooks (list hook))
-      (setq llm-buffer-overlay overlay))))
+    ;; Send the request to the LLM.
+    (overlay-put
+     overlay 'request
+     (llm-chat-streaming llm-buffer-provider prompt
+                         partial-callback
+                         response-callback
+                         error-callback))
+    
+    ;; Cancel the LLM request if the user deletes the whole output
+    ;; region.
+    (overlay-put
+     overlay 'modification-hooks
+     (list
+      (lambda (overlay after start end &optional length)
+        (when (= (overlay-start overlay) (overlay-end overlay))
+          (llm-buffer-cancel)))))
+
+    ;; Let the user see the request is in progress and cancel it.
+    (setq llm-buffer-overlay overlay)
+    (llm-request-mode 1)))
 
 (provide 'llm-buffer)
 
