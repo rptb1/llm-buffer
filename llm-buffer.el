@@ -394,10 +394,14 @@ temperature of 0.75."
             (funcall finish-text)
             (with-current-buffer request-buffer
               (llm-request-mode 0)
-              (insert
-               (propertize (concat "[" msg "]")
-                           'face 'llm-buffer-error
-                           'font-lock-face 'llm-buffer-error)))
+              ;; Insert error message into buffer.
+              ;; TODO: This inserts a bogus error on cancel.
+              (save-excursion
+                (goto-char end-marker)
+                (insert
+                 (propertize (concat "[" msg "]")
+                             'face 'llm-buffer-error
+                             'font-lock-face 'llm-buffer-error))))
             (error msg))))
 
     ;; Insert the waiting text
