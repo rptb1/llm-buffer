@@ -20,31 +20,21 @@
 (require 'llm) ; See <https://github.com/ahyatt/llm>.
 (require 'llm-openai)
 
-(defface llm-buffer-waiting '((t :inherit warning))
-  "Face used for temporary waiting message."
-  :group 'llm-buffer-faces)
+(defgroup llm-buffer nil
+  "Tool for talking to LLMs from buffers."
+  :group 'tools)
 
-(defface llm-buffer-partial '((t :inherit success))
-  "Face used for partially inserted LLM response."
-  :group 'llm-buffer-faces)
-
-(defface llm-buffer-error '((t :inherit error))
-  "Face used for error messages from the LLM."
-  :group 'llm-buffer-faces)
-
-(defconst llm-buffer-partial-props
-  '(face llm-buffer-partial
-    font-lock-face llm-buffer-partial))
-
-;; Requires llama-server running locally, e.g. ::
-;;   ./build/bin/llama-server -m models/Meta-Lllama.gguf
-;;
 ;; On Tails, requieres plz-curl-default-args has "--proxy ''" so that
 ;; the LLM module can talk to localhost.
 
 (defcustom llm-buffer-provider
   (make-llm-openai-compatible :url "http://127.0.0.1:8080")
-  "Backend LLM provider."
+  "Backend LLM provider.
+
+The default value is intended for llama.cpp's llama-server
+running on the local host machine, e.g.
+
+  ./build/bin/llama-server -m models/Meta-Lllama.gguf"
   :type '(sexp :validate llm-standard-provider-p))
 
 (defcustom llm-buffer-separator "^---$"
@@ -80,6 +70,26 @@ such as \"\\\\n---\\\\n\"."
   :type 'string
   :local t)
 
+(defgroup llm-buffer-faces nil "Faces used in llm-buffer."
+  :group 'faces
+  :group 'llm-buffer)
+
+(defface llm-buffer-waiting '((t :inherit warning))
+  "Face used for temporary waiting message."
+  :group 'llm-buffer-faces)
+
+(defface llm-buffer-partial '((t :inherit success))
+  "Face used for partially inserted LLM response."
+  :group 'llm-buffer-faces)
+
+(defface llm-buffer-error '((t :inherit error))
+  "Face used for error messages from the LLM."
+  :group 'llm-buffer-faces)
+
+(defconst llm-buffer-partial-props
+  '(face llm-buffer-partial
+    font-lock-face llm-buffer-partial))
+
 (defvar-local llm-buffer-canceller nil
   "When non-nil, there is an LLM request running in the buffer,
 and this function can be called to cancel it.")
@@ -88,8 +98,7 @@ and this function can be called to cancel it.")
   "Cancel the LLM request that's inserting into the buffer."
   (when llm-buffer-canceller
     (funcall llm-buffer-canceller)
-    (setq llm-buffer-canceller nil)
-    ))
+    (setq llm-buffer-canceller nil)))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
 ;; sure I like it.
