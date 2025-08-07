@@ -86,15 +86,17 @@ such as \"\\\\n---\\\\n\"."
   "Face used for error messages from the LLM."
   :group 'llm-buffer-faces)
 
-(defvar-local llm-buffer-canceller nil
-  "When non-nil, there is an LLM request running in the buffer,
-and this function can be called to cancel it.")
+(defvar-local llm-buffer-overlay nil
+  "When non-nil there is an LLM request running in the buffer that
+will insert text into this overlay.")
 
 (defun llm-buffer-cancel ()
   "Cancel the LLM request that's inserting into the buffer."
-  (when llm-buffer-canceller
-    (funcall llm-buffer-canceller)
-    (setq llm-buffer-canceller nil)))
+  (when llm-buffer-overlay
+    (llm-cancel-request (overlay-get llm-buffer-overlay 'request))
+    (funcall (overlay-get llm-buffer-overlay 'remove-waiting))
+    (delete-overlay llm-buffer-overlay)
+    (setq llm-buffer-overlay nil)))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
 ;; sure I like it.
@@ -359,7 +361,7 @@ A prefix argument may be used to specify the LLM temperature for
 the request in hundredths, e.g. a prefix argument of 75 is a
 temperature of 0.75."
   (interactive "P")
-  (when llm-buffer-canceller (funcall llm-buffer-canceller))
+  (llm-buffer-cancel)
   (let* ((prompt (funcall llm-buffer-to-prompt centitemp))
 
          ;; Use an overlay to remember where to insert the results and
@@ -390,8 +392,8 @@ temperature of 0.75."
             (funcall partial-callback (concat text llm-buffer-postfix))
             (with-current-buffer (overlay-buffer overlay)
               (llm-request-mode 0)
-              (setq llm-buffer-canceller nil))
-            (delete-overlay overlay)))
+              (delete-overlay overlay)
+              (setq llm-buffer-overlay nil))))
          (error-callback
           (lambda (_ msg)
             (funcall remove-waiting)
@@ -420,14 +422,13 @@ temperature of 0.75."
             (llm-chat-streaming llm-buffer-provider prompt
                                 partial-callback
                                 response-callback
-                                error-callback))
-           (canceller
-            (lambda ()
-              (llm-cancel-request request)
-              (funcall remove-waiting)
-              (delete-overlay overlay))))
-      (setq llm-buffer-canceller canceller)
+                                error-callback)))
+      (overlay-put overlay 'request request)
+      (overlay-put overlay 'remove-waiting remove-waiting)
+      (setq llm-buffer-overlay overlay)
+      
       ;; Cancel the LLM request if the output is killed.
+      ;; TODO: Move this to an overlay hook
       (letrec
           ((hook
             (lambda (beg end len)
