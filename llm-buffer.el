@@ -93,14 +93,19 @@ will insert text into this overlay.")
 (defun llm-buffer-cancel ()
   "Cancel the LLM request that's inserting into the buffer."
   (when llm-buffer-overlay
+    ;; Stop the LLM.
     (llm-cancel-request (overlay-get llm-buffer-overlay 'request))
+    ;; Remove the waiting text, but not any other text.  This allows
+    ;; for easy cancellation before the LLM starts writing, but
+    ;; preserves any writing or edits.
     (funcall (overlay-get llm-buffer-overlay 'remove-waiting))
     (llm-request-mode 0)
     (delete-overlay llm-buffer-overlay)
     (setq llm-buffer-overlay nil)))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
-;; sure I like it.
+;; sure I like it.  It's a bit too easy to stop the LLM.  Maybe have
+;; llm-buffer toggle instead?
 (defun llm-buffer-cancel-quit ()
   "Cancel the LLM request that's inserting into the buffer and quit."
   (interactive)
@@ -120,6 +125,7 @@ will insert text into this overlay.")
       (add-hook 'kill-buffer-hook 'llm-buffer-cancel nil t)
     (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)))
 
+;; This is the heart of the module.
 (defun llm-buffer-alist-to-prompt (parts &optional centitemp)
   "Form an LLM prompt from an alist of roles and text.
 
@@ -128,14 +134,15 @@ e.g. ((system . \"Your name is Bob\")
       (assistant . \"My name is Bob.\")
       (user . \"Do you have a surname?\"))
 
+If the alist contains more than one system element, they are
+concatenated, separated by a newline, to form the system prompt.
+
 The roles may be nil, in which case roles are guessed as follows:
 
 - If there is only one element a simple user prompt is formed.
 
 - Otherwise, the first element is used as the system prompt, with
-  user and assistant prompts following.
-
-In any case, an empty user prompt is appended if necessary."
+  user and assistant prompts following."
   (let* ((temperature (or (when centitemp (/ centitemp 100.0))
                           llm-buffer-temperature))
          (prompt (make-llm-chat-prompt :temperature temperature)))
@@ -149,21 +156,20 @@ In any case, an empty user prompt is appended if necessary."
                           (pcase last-role
                             ;; No role on first part?  Make it the system prompt.
                             ('nil 'system)
+                            ;; Alternate user and assistant roles.
                             ('user 'assistant)
                             (_ 'user))))
                 (text (cdar parts)))
             (if (eq role 'system)
                 ;; TODO: Append to system prompt rather than ignoring?
                 (setf (llm-chat-prompt-context prompt)
-                      (or (llm-chat-prompt-context prompt) text))
+                      (if (llm-chat-prompt-context prompt)
+                          (concat (llm-chat-prompt-context prompt) "\n" text)
+                        text))
               (llm-chat-prompt-append-response prompt text role))
             (setq last-role role)
             (setq parts (cdr parts))))))
     prompt))
-
-;; TODO: This is where things should be clever, e.g. breaking an RST
-;; document into sections, looing for temperature hints, etc.  Perhaps
-;; dispatch by mode.
 
 (defun llm-buffer-split (&optional centitemp)
   "Form an LLM prompt from the region or buffer by splitting the
@@ -184,8 +190,9 @@ If there are no separators, the whole buffer is sent."
            (lambda (string)
              (cons nil
                    (string-trim
-                    ;; TODO: Replace with space?
-                    (replace-regexp-in-string llm-buffer-comment "" string))))
+                    (if llm-buffer-comment
+                        (replace-regexp-in-string llm-buffer-comment " " string)
+                      string))))
            (split-string text llm-buffer-separator))))
     (llm-buffer-alist-to-prompt parts centitemp)))
 
@@ -208,8 +215,11 @@ if it does not, and there is more than one part, the first part
 is used as the system prompt, followed by alternating user then
 assistant parts.
 
-Only the first \"system\" part is used as the context
-field in the prompt, and subsequent system parts are ignored."
+Multiple \"system\" parts are concatenated with newlines to form
+a system prompt.
+
+If llm-buffer-comment is not nil, any occurences within the parts
+are replaced by a single space."
   (let* ((start (if (use-region-p) (region-beginning) (point-min)))
          (end (if (use-region-p) (region-end) (point-max)))
          (parts nil))
@@ -222,16 +232,29 @@ field in the prompt, and subsequent system parts are ignored."
           (if (re-search-forward (or end-regexp start-regexp) end t)
               (goto-char (match-beginning 0))
             (goto-char end))
-          (let ((text
-                 (string-trim
-                  (replace-regexp-in-string
-                   llm-buffer-comment "" ; TODO: replace with space?
-                   (buffer-substring-no-properties text-start (point))))))
+          (let* ((text (buffer-substring-no-properties text-start (point)))
+                 (text (if llm-buffer-comment
+                           (replace-regexp-in-string llm-buffer-comment " " text)
+                         text))
+                 (text (string-trim text)))
             (setq parts (cons (cons role text) parts))))))
     (setq parts (nreverse parts))
     (llm-buffer-alist-to-prompt parts)))
 
 (defun llm-buffer-comment-chat-to-prompt (&optional centitemp)
+  "Form an LLM prompt from the region or buffer by looking for
+char-like markers like \"user:\", \"assistant:\" or \"system:\"
+embedded in comments, and sending what follows as a conversation.
+
+So an example buffer might look like this:
+
+  /* This part isn't sent. */
+  /* system: */
+  Your name is Bob.
+  /* user: */
+  What is your name?
+  /* assistant: */
+  My name is Bob."
   (llm-buffer-markers-to-prompt
    (concat "^"
            (regexp-quote comment-start)
