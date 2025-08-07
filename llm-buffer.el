@@ -422,20 +422,16 @@ temperature of 0.75."
             (llm-chat-streaming llm-buffer-provider prompt
                                 partial-callback
                                 response-callback
-                                error-callback)))
+                                error-callback))
+           ;; Cancel the LLM request if the user kills the output.
+           (hook
+            (lambda (overlay after start end &optional length)
+              (when (= (overlay-start overlay) (overlay-end overlay))
+                (llm-buffer-cancel)))))
       (overlay-put overlay 'request request)
       (overlay-put overlay 'remove-waiting remove-waiting)
-      (setq llm-buffer-overlay overlay)
-      
-      ;; Cancel the LLM request if the output is killed.
-      ;; TODO: Move this to an overlay hook
-      (letrec
-          ((hook
-            (lambda (beg end len)
-              (when (= (overlay-start overlay) (overlay-end overlay))
-                (llm-buffer-cancel)
-                (remove-hook 'after-change-functions hook t)))))
-        (add-hook 'after-change-functions hook nil t)))))
+      (overlay-put overlay 'modification-hooks (list hook))
+      (setq llm-buffer-overlay overlay))))
 
 (provide 'llm-buffer)
 
