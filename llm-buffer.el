@@ -95,6 +95,7 @@ will insert text into this overlay.")
   (when llm-buffer-overlay
     (llm-cancel-request (overlay-get llm-buffer-overlay 'request))
     (funcall (overlay-get llm-buffer-overlay 'remove-waiting))
+    (llm-request-mode 0)
     (delete-overlay llm-buffer-overlay)
     (setq llm-buffer-overlay nil)))
 
@@ -117,8 +118,7 @@ will insert text into this overlay.")
   :keymap '(([remap keyboard-quit] . llm-buffer-cancel-quit))
   (if llm-request-mode
       (add-hook 'kill-buffer-hook 'llm-buffer-cancel nil t)
-    (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)
-    (llm-buffer-cancel)))
+    (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)))
 
 (defun llm-buffer-alist-to-prompt (parts &optional centitemp)
   "Form an LLM prompt from an alist of roles and text.
@@ -433,7 +433,7 @@ temperature of 0.75."
           ((hook
             (lambda (beg end len)
               (when (= (overlay-start overlay) (overlay-end overlay))
-                (llm-request-mode 0)
+                (llm-buffer-cancel)
                 (remove-hook 'after-change-functions hook t)))))
         (add-hook 'after-change-functions hook nil t)))))
 
