@@ -2,8 +2,26 @@
 ;;;
 ;;; Much simpler than ellama.  Focussed on creative single-buffer stuff.
 ;;;
-;;; Recommended:
-;;; (define-key global-map (kbd "C-c e") 'ellama-buffer)
+;;; The basic idea is to have a conversation with an LLM that is
+;;; derived from a single buffer.  The buffer is processed into a
+;;; prompt, the prompt is sent, and the reply from the LLM is streamed
+;;; into the buffer.
+;;;
+;;; Various formats of buffer are supported, and markup of the
+;;; conversation can be done in comments, such as code comments or the
+;;; comments of a reStructuredText document.  You can override the
+;;; format of the buffer and various other things in file local
+;;; variables.  The idea is that you can save your conversation in a
+;;; file and resume it later.
+;;;
+;;; You can edit the LLM's output while it's streaming into the
+;;; buffer.  You can cancel the LLM using quit (usually C-g) or by
+;;; deleting the LLM's output.
+;;;
+;;; Recommended in your Emacs init file::
+;;;
+;;;   (require 'llm-buffer)
+;;;   (define-key global-map (kbd "C-c e") 'llm-buffer)
 ;;;
 ;;; TODO:
 ;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308
