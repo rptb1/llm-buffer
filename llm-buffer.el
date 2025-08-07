@@ -86,10 +86,6 @@ such as \"\\\\n---\\\\n\"."
   "Face used for error messages from the LLM."
   :group 'llm-buffer-faces)
 
-(defconst llm-buffer-partial-props
-  '(face llm-buffer-partial
-    font-lock-face llm-buffer-partial))
-
 (defvar-local llm-buffer-canceller nil
   "When non-nil, there is an LLM request running in the buffer,
 and this function can be called to cancel it.")
@@ -327,7 +323,7 @@ placeholder while waiting the LLM to respond."
               "")
             model-name)))
 
-(defun llm-buffer-inserter (buffer beg end)
+(defun llm-buffer-inserter (overlay)
   "Make an insertion callback for llm-chat-streaming that appends
 the LLM output to a region.  The first call to the callback
 replaces the entire region, including the waiting message, but
@@ -335,20 +331,22 @@ subsequent calls only append to the region, so that it can be
 edited by the user while the LLM is still generating."
   (let ((prefix ""))
     (lambda (text)
-      (with-current-buffer buffer
-        ;; TODO: prefix should always be a prefix
-        (if (and (not (string-empty-p prefix))
-                 (string-prefix-p prefix text))
-            (save-excursion
-              (goto-char end)
-              (setq beg (point))
-              (insert (substring text (length prefix))))
-          (replace-region-contents
-           beg end
-           (lambda ()
-             (concat llm-buffer-prefix text))))
-        (add-text-properties beg end llm-buffer-partial-props)
-        (setq prefix text)))))
+      (let ((start (overlay-start overlay))
+            (end (overlay-end overlay)))
+        (with-current-buffer (overlay-buffer overlay)
+          ;; TODO: prefix should always be a prefix
+          (if (and (not (string-empty-p prefix))
+                   (string-prefix-p prefix text))
+              (save-excursion
+                (goto-char end)
+                (setq start (point))
+                (insert (substring text (length prefix))))
+            (replace-region-contents
+             start end
+             (lambda ()
+               (concat llm-buffer-prefix text))))
+          (overlay-put overlay 'face 'llm-buffer-partial)
+          (setq prefix text))))))
 
 (defun llm-buffer (&optional centitemp)
   "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
@@ -364,57 +362,57 @@ temperature of 0.75."
   (when llm-buffer-canceller (funcall llm-buffer-canceller))
   (let* ((prompt (funcall llm-buffer-to-prompt centitemp))
 
-         ;; Remember where to insert the results
-         (request-buffer (current-buffer))
-         (end-marker (copy-marker (point) t))
-         (beg-marker (copy-marker end-marker nil))
+         ;; Use an overlay to remember where to insert the results and
+         ;; to highlight them to the user.
+         (overlay (make-overlay (point) (point) nil nil t))
 
-         ;; Set up a waiting message to be inserted while waiting for
+         ;; Create a waiting message to be inserted while waiting for
          ;; a response from the LLM.
-         (waiting-text (propertize (llm-buffer-waiting-text prompt)
-                                   'face 'llm-buffer-waiting
-                                   'font-lock-face 'llm-buffer-waiting))
+         (waiting-text (llm-buffer-waiting-text prompt))
          (remove-waiting
           ;; Remove the placeholder if the request was cancelled
           ;; before any text arrived.
           (lambda ()
-            (with-current-buffer request-buffer
-              (when (string= (buffer-substring beg-marker end-marker) waiting-text)
-                (delete-region beg-marker end-marker)))))
+            (with-current-buffer (overlay-buffer overlay)
+              (let* ((start (overlay-start overlay))
+                     (end (overlay-end overlay))
+                     (text (buffer-substring-no-properties start end)))
+                (when (string= text waiting-text)
+                  (delete-region start end))))))
 
          ;; Set up callbacks to receive results from the LLM via
          ;; llm-chat-streaming.
-         (partial-callback (llm-buffer-inserter request-buffer beg-marker end-marker))
-         (finish-text
-          (lambda ()
-            ;; TODO: Could incorporate remove-waiting?
-            (remove-text-properties beg-marker end-marker llm-buffer-partial-props)))
+         ;; TODO: Could just take an overlay
+         (partial-callback (llm-buffer-inserter overlay))
          ;; When the final result arrives, put it in the buffer and cancel the mode.
          (response-callback
           (lambda (text)
             (funcall partial-callback (concat text llm-buffer-postfix))
-            (funcall finish-text)
-            (with-current-buffer request-buffer
+            (with-current-buffer (overlay-buffer overlay)
               (llm-request-mode 0)
-              (setq llm-buffer-canceller nil))))
+              (setq llm-buffer-canceller nil))
+            (delete-overlay overlay)))
          (error-callback
           (lambda (_ msg)
             (funcall remove-waiting)
-            (funcall finish-text)
-            (with-current-buffer request-buffer
+            (with-current-buffer (overlay-buffer overlay)
               (llm-request-mode 0)
               ;; Insert error message into buffer.
               ;; TODO: This inserts a bogus error on cancel.
               (save-excursion
-                (goto-char end-marker)
-                (insert
-                 (propertize (concat "[" msg "]")
-                             'face 'llm-buffer-error
-                             'font-lock-face 'llm-buffer-error))))
+                (goto-char (overlay-end overlay))
+                (insert (concat "[" msg "]"))
+                (overlay-put overlay 'face 'llm-buffer-error)
+                ;; Ensure the overlay is deleted when the user deletes
+                ;; the error message.
+                (overlay-put overlay 'evaporate t)))
             (error msg))))
 
     ;; Insert the waiting text
-    (replace-region-contents beg-marker end-marker (lambda () waiting-text))
+    (replace-region-contents (overlay-start overlay)
+                             (overlay-end overlay)
+                             (lambda () waiting-text))
+    (overlay-put overlay 'face 'llm-buffer-waiting)
 
     ;; Send the request to the LLM, setting up a cancel operation.
     (llm-request-mode 1)
@@ -427,13 +425,13 @@ temperature of 0.75."
             (lambda ()
               (llm-cancel-request request)
               (funcall remove-waiting)
-              (funcall finish-text))))
+              (delete-overlay overlay))))
       (setq llm-buffer-canceller canceller)
       ;; Cancel the LLM request if the output is killed.
       (letrec
           ((hook
             (lambda (beg end len)
-              (when (= beg-marker end-marker)
+              (when (= (overlay-start overlay) (overlay-end overlay))
                 (llm-request-mode 0)
                 (remove-hook 'after-change-functions hook t)))))
         (add-hook 'after-change-functions hook nil t)))))
