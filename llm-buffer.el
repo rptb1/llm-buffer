@@ -334,7 +334,7 @@ placeholder while waiting the LLM to respond."
                               (car (llm-models llm-buffer-provider)))
                          "LLM")))
     ;; TODO: Could include provider or model name rather than just "LLM".
-    (format "[Sending approx %d tokens from %d parts%s.  Waiting for %s...]"
+    (format "[Sending approx %d tokens from %s%d parts%s.  Waiting for %s...]"
             token-count
             (if (llm-chat-prompt-context prompt)
                 "system prompt and "
