@@ -75,6 +75,21 @@ argument to llm-buffer."
   :type 'float
   :local t)
 
+(defcustom llm-buffer-params nil
+  "An alist of extra JSON parameters to pass to the LLM.
+
+Can be overriden in the buffer to adjust LLM parameters, for
+example:
+
+  ((:seed . 1234)
+   (:max_tokens . 100)
+   (:mirostat_tau . 7.5))
+
+This value is passed to llm-make-chat-prompt as the
+NON-STANDARD-PARAMS."
+  :type '(alist :key-type symbol)
+  :local t)
+
 ;; TODO: Could be more flexible to allow post-processing.
 (defcustom llm-buffer-prefix ""
   "A string to insert before the LLM output when it starts
@@ -163,7 +178,9 @@ The roles may be nil, in which case roles are guessed as follows:
   user and assistant prompts following."
   (let* ((temperature (or (when centitemp (/ centitemp 100.0))
                           llm-buffer-temperature))
-         (prompt (make-llm-chat-prompt :temperature temperature)))
+         (prompt (make-llm-chat-prompt
+                  :temperature temperature
+                  :non-standard-params llm-buffer-params)))
     ;; Process the parts into a prompt
     ;; Just one part without a role?  A simple user prompt.
     (if (and (= (length parts) 1) (not (caar parts)))
