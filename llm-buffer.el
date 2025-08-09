@@ -347,19 +347,17 @@ placeholder while waiting the LLM to respond."
   ;; rest of the llm-buffer module, so it could be simplified.
   (let* ((part-count (length (llm-chat-prompt-interactions prompt)))
          (temperature (llm-chat-prompt-temperature prompt))
-         (interactions (llm-chat-prompt-interactions prompt))
          (token-count
-          (+
-           (cl-reduce
-            #'+
-            (mapcar
-             (lambda (interaction)
-               (llm-count-tokens llm-buffer-provider
-                                 (llm-chat-prompt-interaction-content interaction)))
-             interactions))
-           (llm-count-tokens llm-buffer-provider
-                             (or (llm-chat-prompt-context prompt) ""))))
-         (last (llm-chat-prompt-interaction-content (car (last interactions))))
+          (cl-loop
+           for i in (llm-chat-prompt-interactions prompt)
+           sum (llm-count-tokens llm-buffer-provider
+                                 (llm-chat-prompt-interaction-content i))))
+         (context (llm-chat-prompt-context prompt))
+         (token-count
+          (if context
+              (+ token-count
+                 (llm-count-tokens llm-buffer-provider context))
+            token-count))
          ;; TODO: Investigate how to reliably work out which model
          ;; we're talking to by testing with a multi-model server.
          (model-name (or (and (not (string= (llm-name llm-buffer-provider) "unset"))
