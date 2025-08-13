@@ -53,7 +53,8 @@ The default value is intended for llama.cpp's llama-server
 running on the local host machine, e.g.
 
   ./build/bin/llama-server -m models/Meta-Lllama.gguf"
-  :type '(sexp :validate llm-standard-provider-p))
+  :type '(sexp :validate llm-standard-provider-p)
+  :local t)
 
 (defcustom llm-buffer-separator "^---$"
   "Regular expression use to divide buffers into chat parts."
@@ -274,7 +275,7 @@ are replaced by a single space."
                  (text (string-trim text)))
             (setq parts (cons (cons role text) parts))))))
     (setq parts (nreverse parts))
-    (llm-buffer-alist-to-prompt parts)))
+    (llm-buffer-alist-to-prompt parts centitemp)))
 
 (defun llm-buffer-comment-chat-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
