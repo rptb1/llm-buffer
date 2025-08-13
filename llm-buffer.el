@@ -104,6 +104,21 @@ such as \"\\\\n---\\\\n\"."
   :type 'string
   :local t)
 
+(defcustom llm-buffer-keys nil
+  "A plist of placeholder values to be substituted in the prompt.
+
+If non-nil, llm-prompt-fill-text is applied to the text from the
+buffer with this list of keys in order to substitute placeholders
+with the value of keys from this list.
+
+For example, if \"Hello {{name}}.\" appears in the text, and
+llm-buffer-keys is defined as (:name \"John\") then the text sent
+to the LLM will say \"Hello John.\"
+
+See the documentation for llm-prompt-fill-text for details."
+  :type '(plist :value-type string)
+  :local t)
+
 (defgroup llm-buffer-faces nil "Faces used in llm-buffer."
   :group 'faces
   :group 'llm-buffer)
@@ -196,6 +211,12 @@ The roles may be nil, in which case roles are guessed as follows:
                             ('user 'assistant)
                             (_ 'user))))
                 (text (cdar parts)))
+            (when llm-buffer-keys
+              (setq text
+                    (apply #'llm-prompt-fill-text
+                           text
+                           llm-buffer-provider
+                           llm-buffer-keys)))
             (if (eq role 'system)
                 ;; TODO: Append to system prompt rather than ignoring?
                 (setf (llm-chat-prompt-context prompt)
