@@ -1,0 +1,30 @@
+llm-buffer enables a conversation with an LLM that is derived from a
+single text file loaded into an Emacs buffer.  The buffer is processed
+into a prompt, the prompt is sent, and the reply from the LLM is
+streamed into the buffer.
+
+This is a much simpler alternative to ellama
+<https://github.com/s-kostyaev/ellama>, designed to be used for
+single-file textual creative stuff.  Attachments, image processing,
+etc. are not supported.  KISS.
+
+llm-buffer can deal with various formats, and markup of the
+conversation can be done in comments, such as code comments or the
+comments of a reStructuredText document.  You can override the format
+of the buffer and various other things in file local variables.  The
+idea is that you can save your conversation in a file and resume it
+later.
+
+You can edit the LLM's output while it's streaming into the buffer.
+You can cancel the LLM using quit (usually C-g) or by deleting the
+LLM's output.
+
+Recommended in your Emacs init file::
+
+  (require 'llm-buffer)
+  (define-key global-map (kbd "C-c e") 'llm-buffer)
+
+Also recommended: Run your LLM locally using llama-server from
+llama.cpp <https://github.com/ggml-org/llama.cpp> and optionally
+llama-swap <https://github.com/mostlygeek/llama-swap> if you want easy
+model switching.  You don't need no fancy GUIs: you have Emacs.
