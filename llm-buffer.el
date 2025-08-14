@@ -45,6 +45,9 @@
 ;; On Tails, requieres plz-curl-default-args has "--proxy ''" so that
 ;; the LLM module can talk to localhost.
 
+;; TODO: This cannot be managed with customize-variable because it
+;; requires evaluation.  Research how this kind of thing is handled by
+;; other modules.
 (defcustom llm-buffer-provider
   (make-llm-openai-compatible :url "http://127.0.0.1:8080")
   "Backend LLM provider.
