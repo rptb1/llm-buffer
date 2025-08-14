@@ -23,11 +23,6 @@
 ;;;   (require 'llm-buffer)
 ;;;   (define-key global-map (kbd "C-c e") 'llm-buffer)
 ;;;
-;;; TODO:
-;;; https://github.com/ggml-org/llama.cpp/blob/baad94885df512bb24ab01e2b22d1998fce4d00e/tools/server/server.cpp#L261-L308
-;;; suggests a list of non-standard params.  There should be a way of
-;;; specifying arbitrary parameters like this.
-;;;
 ;;; TODO: It might be important to retain the same llm-chat-prompt
 ;;; object between requests so that the LLM can cache.  That doesn't
 ;;; seem to matter to llama-cpp's llama-server.  To do that, we could
@@ -55,12 +50,23 @@
 The default value is intended for llama.cpp's llama-server
 running on the local host machine, e.g.
 
-  ./build/bin/llama-server -m models/Meta-Lllama.gguf"
+  ./build/bin/llama-server -m models/Meta-Llama.gguf"
   :type '(sexp :validate llm-standard-provider-p)
   :local t)
 
 (defcustom llm-buffer-separator "^---$"
-  "Regular expression use to divide buffers into chat parts."
+  "Regular expression use to divide buffers into chat parts.
+
+This is only used by llm-buffer-split, the default for
+llm-buffer-to-prompt, to provide a quick and easy way of getting
+started in a fresh buffer or file that looks like this.
+
+  Your name is Bob.
+  ---
+  What is your name?
+  ---
+  I am Bob.
+"
   :type 'regexp
   ;; Can be overriden in e.g. file local variables.
   :local t)
@@ -94,7 +100,8 @@ NON-STANDARD-PARAMS."
   :type '(alist :key-type symbol)
   :local t)
 
-;; TODO: Could be more flexible to allow post-processing.
+;; TODO: Could be more flexible to allow post-processing.  e.g. a
+;; post-processing hook.
 (defcustom llm-buffer-prefix ""
   "A string to insert before the LLM output when it starts
 arriving, such as \"assistant: \"."
@@ -140,7 +147,7 @@ See the documentation for llm-prompt-fill-text for details."
 
 (defvar-local llm-buffer-overlay nil
   "When non-nil there is an LLM request running in the buffer that
-will insert text into this overlay.")
+will insert text into this overlay.  See llm-buffer.")
 
 (defun llm-buffer-cancel ()
   "Cancel the LLM request that's inserting into the buffer."
@@ -156,8 +163,8 @@ will insert text into this overlay.")
     (setq llm-buffer-overlay nil)))
 
 ;; TODO: I inherited this overloading of quit from ellama and I'm not
-;; sure I like it.  It's a bit too easy to stop the LLM.  Maybe have
-;; llm-buffer toggle instead?
+;; sure I like it.  It's a bit too easy to stop the LLM by accident.
+;; Maybe have llm-buffer toggle instead?
 (defun llm-buffer-cancel-quit ()
   "Cancel the LLM request that's inserting into the buffer and quit."
   (interactive)
@@ -167,7 +174,7 @@ will insert text into this overlay.")
 ;; This minor mode is applied when the buffer has an active
 ;; asynchronous request to the LLM that might be inserting text.  The
 ;; purpose of the mode is to allow the request to be cancelled, and
-;; make it visible that this is happening.
+;; make it visible that LLM insertion is pending.
 (define-minor-mode llm-request-mode
   "Minor mode for buffers with active LLM requests."
   :interactive nil
@@ -177,7 +184,8 @@ will insert text into this overlay.")
       (add-hook 'kill-buffer-hook 'llm-buffer-cancel nil t)
     (remove-hook 'kill-buffer-hook 'llm-buffer-cancel t)))
 
-;; This is the heart of the module.
+;; This is the heart of the module, taking an alist extracted from the
+;; buffer and converting it into a prompt for the LLM.
 (defun llm-buffer-alist-to-prompt (parts &optional centitemp)
   "Form an LLM prompt from an alist of roles and text.
 
@@ -221,7 +229,6 @@ The roles may be nil, in which case roles are guessed as follows:
                            llm-buffer-provider
                            llm-buffer-keys)))
             (if (eq role 'system)
-                ;; TODO: Append to system prompt rather than ignoring?
                 (setf (llm-chat-prompt-context prompt)
                       (if (llm-chat-prompt-context prompt)
                           (concat (llm-chat-prompt-context prompt) "\n" text)
@@ -233,13 +240,15 @@ The roles may be nil, in which case roles are guessed as follows:
 
 (defun llm-buffer-split (&optional centitemp)
   "Form an LLM prompt from the region or buffer by splitting the
-buffer at the regular expression in llm-buffer-separator.
+buffer into parts at the regular expression in
+llm-buffer-separator.
 
-The first part is sent as a system prompt.  The rest are sent as
-a chat conversation, between the user and the LLM as assistant.
-If necessary, an empty user prompt is appended.
+If there are no separators, the whole region or buffer is sent as
+a simple user prompt.
 
-If there are no separators, the whole buffer is sent."
+If there is more than one part, the first part is sent as a
+system prompt.  The rest are sent as a chat conversation, between
+the user and the LLM."
   (let* ((text
           (if (use-region-p)
               (buffer-substring-no-properties (region-beginning) (region-end))
@@ -322,6 +331,8 @@ So an example buffer might look like this:
    nil
    centitemp))
 
+;; NOTE: This differs from llm-buffer-comment-chat-to-prompt because
+;; it allows for chatting on single lines.
 (defun llm-buffer-chat-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
 chat-like markers at the beginning of lines like \"user:\" and
@@ -339,6 +350,8 @@ So an example chat buffer might look like this:
   assistant: My name is Bob."
   (llm-buffer-markers-to-prompt "^\\(system\\|user\\|assistant\\):" nil centitemp))
 
+;; TODO: This is intended for things like code, but it isn't very
+;; flexible.
 (defun llm-buffer-markup-to-prompt (&optional centitemp)
   "Form an LLM prompt from the region or buffer by looking for
 special markup, which can be within the comments of whatever
@@ -365,11 +378,11 @@ So an example buffer might look like this:
   (llm-buffer-markers-to-prompt "@llm-start(\\(system\\|user\\|assistant\\)).*$"
                                 "^.*@llm-end" centitemp))
     
+;; NOTE: Nothing in this text is necessary to the function of the rest
+;; of the llm-buffer module, so it could be simplified.
 (defun llm-buffer-waiting-text (prompt)
   "Compose waiting message text to insert into the buffer as a
 placeholder while waiting the LLM to respond."
-  ;; NOTE: Nothing in this text is necessary to the function of the
-  ;; rest of the llm-buffer module, so it could be simplified.
   (let* ((part-count (length (llm-chat-prompt-interactions prompt)))
          (temperature (llm-chat-prompt-temperature prompt))
          (token-count
@@ -391,7 +404,6 @@ placeholder while waiting the LLM to respond."
                               (= (length (llm-models llm-buffer-provider)) 1)
                               (car (llm-models llm-buffer-provider)))
                          "LLM")))
-    ;; TODO: Could include provider or model name rather than just "LLM".
     (format "[Sending approx %d tokens from %s%d parts%s.  Waiting for %s...]"
             token-count
             (if (llm-chat-prompt-context prompt)
@@ -428,12 +440,18 @@ edited by the user while the LLM is still generating."
           (overlay-put overlay 'face 'llm-buffer-partial)
           (setq prefix text))))))
 
+;; This is the main interface to the module, and is intended to be
+;; bound to a keystroke such as "C-c e".
 (defun llm-buffer (&optional centitemp)
-  "Send the region or buffer to the LLM, scheduling the response to arrive at the point.
+  "Send the region or buffer to the LLM, scheduling the response to
+arrive at the point.
 
-If the buffer contains lines like \"---\" then the first part is
-sent as the system prompt, and the remaining parts are sent as a
-chat conversation.
+By default, if the buffer contains lines like \"---\" then the
+first part is sent as the system prompt, and the remaining parts
+are sent as a chat conversation.  This behaviour can be changed
+per-buffer to allow for various kinds of chat formats and markup
+within other documents, such as reStructuredText files with file
+local variables.  See llm-buffer-to-prompt.
 
 A prefix argument may be used to specify the LLM temperature for
 the request in hundredths, e.g. a prefix argument of 75 is a
