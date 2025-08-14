@@ -1,30 +1,64 @@
-llm-buffer enables a conversation with an LLM that is derived from a
-single text file loaded into an Emacs buffer.  The buffer is processed
-into a prompt, the prompt is sent, and the reply from the LLM is
-streamed into the buffer.
+llm-buffer provides a lightweight Emacs interface for single-file
+conversations with a large language model (LLM).  It processes the
+current buffer (or region) into a prompt and streams the LLM’s reply
+in place, letting you edit or cancel the output as it arrives.  Save
+the buffer and load it again later to persist and continue.
 
 This is a much simpler alternative to ellama
 <https://github.com/s-kostyaev/ellama>, designed to be used for
-single-file textual creative stuff.  Attachments, image processing,
+single-file textual creativity.  Attachments, image processing,
 etc. are not supported.  KISS.
+
+Suggested installation:
+
+1. Ensure you have the "llm" package <https://github.com/ahyatt/llm>
+   installed.
+
+2. Run an LLM server such as llama-server from llama.cpp
+   <https://github.com/ggml-org/llama.cpp>, or customize
+   llm-buffer-provider to talk to an online provider.
+
+3. Add to your Emacs init file::
+
+     (require 'llm-buffer)
+     (define-key global-map (kbd "C-c e") 'llm-buffer)
+
+Usage:
+
+1. Open or create a text-based buffer (.txt, .rst, .md, or any source
+   file with comments).
+
+2. Edit your prompt and any conversation markup (see examples).
+
+3. Position the point and press C-c e to start llm-buffer.
+
+4. The buffer’s contents become the prompt; the LLM’s reply streams to
+   the point.
+
+5. While streaming:
+
+   - Edit the reply inline to guide or correct the response.
+
+   - Cancel generation with C-g or by deleting the reply region.
+
+6. Save the file; reopen and press C-c e again to resume the chat.
+
+Examples: Take a look at the chat-example.txt and roleplay-example.rst
+files.
 
 llm-buffer can deal with various formats, and markup of the
 conversation can be done in comments, such as code comments or the
 comments of a reStructuredText document.  You can override the format
-of the buffer and various other things in file local variables.  The
-idea is that you can save your conversation in a file and resume it
-later.
-
-You can edit the LLM's output while it's streaming into the buffer.
-You can cancel the LLM using quit (usually C-g) or by deleting the
-LLM's output.
-
-Recommended in your Emacs init file::
-
-  (require 'llm-buffer)
-  (define-key global-map (kbd "C-c e") 'llm-buffer)
+of the buffer and various other things in file local variables.  See
+the examples.
 
 Also recommended: Run your LLM locally using llama-server from
 llama.cpp <https://github.com/ggml-org/llama.cpp> and optionally
 llama-swap <https://github.com/mostlygeek/llama-swap> if you want easy
 model switching.  You don't need no fancy GUIs: you have Emacs.
+
+In essence, llm-buffer is a thin layer on top of the excellent llm
+module <https://github.com/ahyatt/llm>, providing a convenient
+interactive interface to an LLM for text generation.  If you need more
+complicated use cases, check out ellama
+<https://github.com/s-kostyaev/ellama>.
