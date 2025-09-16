@@ -1,8 +1,8 @@
 llm-buffer provides a lightweight Emacs interface for single-file
 conversations with a large language model (LLM).  It processes the
 current buffer (or region) into a prompt and streams the LLM’s reply
-in place, letting you edit or cancel the output as it arrives.  Save
-the buffer and load it again later to persist and continue.
+in place, letting you edit or cancel the output as it arrives.  Simply
+save the buffer to persist.
 
 This is a much simpler alternative to ellama
 <https://github.com/s-kostyaev/ellama>, designed to be used for
@@ -41,7 +41,8 @@ Usage:
 
    - Cancel generation with C-g or by deleting the reply region.
 
-6. Save the file; reopen and press C-c e again to resume the chat.
+You can then edit the buffer to add your response and continue a
+conversation, save and load it to continue later, etc.
 
 Examples: Take a look at the chat-example.txt and roleplay-example.rst
 files.
